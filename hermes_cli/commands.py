@@ -912,6 +912,41 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         (menu_commands, hidden_count) where hidden_count is the number of
         commands omitted due to the cap.
     """
+    # ARIFLAME: своё меню вместо всех шестидесяти команд.
+    #
+    # Апстрим всегда кладёт в меню ВЕСЬ COMMAND_REGISTRY, и настройкой это не
+    # обрезать — есть только лимит количества. Для нашей аудитории это не просто
+    # шум: там /update (сотрёт наш форк на боксе юзера), /yolo (снимет все
+    # подтверждения опасных команд), /topup (уведёт клиента на чужую кассу),
+    # /debug (выложит логи и переписку по публичной ссылке).
+    #
+    # Список держим в ~/.hermes/MENU.yaml, а не в коде: меню будем править часто,
+    # а этот патч — редко. Формат: `имя: описание`, порядок сохраняется.
+    # Файла нет — поведение ровно как в апстриме.
+    try:
+        import os as _ari_os
+        from pathlib import Path as _AriPath
+
+        _ari_home = _ari_os.environ.get("HERMES_HOME")
+        _ari_menu = (_AriPath(_ari_home) if _ari_home
+                     else _AriPath.home() / ".hermes") / "MENU.yaml"
+        if _ari_menu.is_file():
+            import yaml as _ari_yaml
+
+            _ari_raw = _ari_yaml.safe_load(_ari_menu.read_text(encoding="utf-8")) or {}
+            if isinstance(_ari_raw, dict) and _ari_raw:
+                _ari_out = [
+                    (str(_n).strip().lstrip("/"), str(_d).strip()[:256])
+                    for _n, _d in _ari_raw.items()
+                    if str(_n).strip() and str(_d).strip()
+                ]
+                if _ari_out:
+                    return _ari_out[:max_commands], 0
+    except Exception:
+        # Битый MENU.yaml не должен лишать агента меню вообще —
+        # молча падаем обратно на апстримовское поведение.
+        pass
+
     core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
