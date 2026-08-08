@@ -11216,6 +11216,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_help_command(event)
 
         if canonical == "start":
+            # ARIFLAME: апстрим здесь возвращает "" — команда описана как
+            # «подтвердить платформенный пинг без ответа». Для продукта это
+            # значит, что человек, нажавший кнопку Start в свежем боте, видит
+            # пустой чат. Плагином не лечится: регистрация /start отбивается
+            # как конфликт со встроенной командой.
+            #
+            # Текст держим в файле, а не в коде: приветствие меняется часто,
+            # а этот патч — редко. Нет файла — поведение ровно как в апстриме.
+            try:
+                import os as _ari_os
+                from pathlib import Path as _AriPath
+
+                _ari_home = _ari_os.environ.get("HERMES_HOME")
+                _ari_file = (_AriPath(_ari_home) if _ari_home
+                             else _AriPath.home() / ".hermes") / "START.md"
+                if _ari_file.is_file():
+                    _ari_text = _ari_file.read_text(encoding="utf-8").strip()
+                    if _ari_text:
+                        logger.info("ARIFLAME: greeting on /start for %s", _quick_key)
+                        return _ari_text
+            except Exception:
+                logger.debug("ARIFLAME: greeting failed", exc_info=True)
             logger.info("Ignoring /start platform ping for session %s", _quick_key)
             return ""
 
