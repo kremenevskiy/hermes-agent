@@ -575,6 +575,44 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+
+# ARIFLAME ↓ ---------------------------------------------------------------
+# Кнопки для ответов команд. Апстрим умеет клавиатуры только в своих сценариях
+# (подтверждение обновления), а плагинные команды возвращают голый текст —
+# значит «нажми, чтобы подключить» сделать нечем.
+#
+# Расширяем МИНИМАЛЬНО и только URL-кнопками: у них нет состояния и нет
+# обработки нажатий, Telegram просто открывает ссылку. Кнопки с callback_data
+# потребовали бы роутинга, хранения и защиты от чужих нажатий — а нам для
+# подключения интеграций нужна ровно ссылка.
+#
+# Формат в конце сообщения:
+#     [[buttons]]
+#     Notion|https://…
+#     Календарь|https://…
+_ARI_BUTTONS_RE = re.compile(r"\n*\[\[buttons\]\]\s*\n(.+)$", re.S)
+
+
+def _ari_extract_buttons(text: str):
+    """Вернуть (текст_без_блока, разметка_или_None)."""
+    m = _ARI_BUTTONS_RE.search(text or "")
+    if not m:
+        return text, None
+    rows = []
+    for line in m.group(1).strip().splitlines():
+        if "|" not in line:
+            continue
+        label, url = line.split("|", 1)
+        label, url = label.strip(), url.strip()
+        # Только http(s): tg:// и прочие схемы Telegram в URL-кнопках не примет,
+        # а невалидная кнопка роняет ВСЁ сообщение.
+        if label and url.startswith(("http://", "https://")):
+            rows.append([InlineKeyboardButton(label, url=url)])
+    if not rows:
+        return text[: m.start()].rstrip(), None
+    return text[: m.start()].rstrip(), InlineKeyboardMarkup(rows)
+# ARIFLAME ↑ ---------------------------------------------------------------
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -4716,11 +4754,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         # the raw chunk (raw ** / ``` markers would render
                         # literally); streaming previews stay raw.
                         text = _strip_mdv2(chunk) if finalize else chunk
+                    # ARIFLAME: блок [[buttons]] превращается в URL-кнопки.
+                    text, _ari_kb = _ari_extract_buttons(text)
                     sent_msg = await self._bot.send_message(
                         chat_id=normalize_telegram_chat_id(chat_id),
                         text=text,
                         parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
                         reply_to_message_id=reply_to_id,
+                        **({"reply_markup": _ari_kb} if _ari_kb else {}),
                         **thread_kwargs,
                         **self._link_preview_kwargs(),
                         **self._notification_kwargs(metadata),
