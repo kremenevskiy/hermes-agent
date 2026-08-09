@@ -621,72 +621,6 @@ def _ari_extract_buttons(text: str):
     return text[: m.start()].rstrip(), InlineKeyboardMarkup(rows)
 # ARIFLAME ↑ ---------------------------------------------------------------
 
-
-# ARIFLAME ↓ ---------------------------------------------------------------
-def _ari_hook_bot(bot) -> None:
-    """Один раз обернуть send_message, чтобы блок [[buttons]] превращался
-    в кнопки независимо от того, каким путём ушло сообщение.
-
-    Патчим КЛАСС: экземпляр Bot объявлен со __slots__, и присваивание атрибута
-    на нём падает. Это уже стоило одного круга отладки — хук был в коде,
-    но не в поведении.
-    """
-    if bot is None:
-        return
-    cls = type(bot)
-    if getattr(cls, "_ari_hooked", False):
-        return
-    original = cls.send_message
-
-    async def send_message(self, *args, **kwargs):
-        text = kwargs.get("text")
-        # Клавиатура, заданная вызывающим, важнее нашей: это сценарии апстрима
-        # (подтверждение обновления, выбор модели), ломать их нельзя.
-        if isinstance(text, str) and not kwargs.get("reply_markup"):
-            clean, markup = _ari_extract_buttons(text)
-            if markup is not None:
-                kwargs["text"] = clean
-                kwargs["reply_markup"] = markup
-        return await original(self, *args, **kwargs)
-
-    try:
-        cls.send_message = send_message
-        cls._ari_hooked = True
-        logger.info("[ARIFLAME] перехват кнопок установлен на %s", cls.__name__)
-    except Exception as e:  # noqa: BLE001
-        # НЕ молча: без хука кнопки не появятся, и причину искать будет негде.
-        logger.error("[ARIFLAME] перехват кнопок НЕ установлен: %s", e)
-# ARIFLAME ↑ ---------------------------------------------------------------
-
-
-# ARIFLAME ↓ ---------------------------------------------------------------
-def _ari_hook_bot(bot) -> None:
-    """Один раз обернуть send_message, чтобы блок [[buttons]] превращался
-    в кнопки независимо от того, каким путём ушло сообщение."""
-    if bot is None or getattr(bot, "_ari_hooked", False):
-        return
-    original = bot.send_message
-
-    async def send_message(*args, **kwargs):
-        text = kwargs.get("text")
-        # Кнопки, уже заданные вызывающим, важнее наших: это сценарии апстрима
-        # (подтверждение обновления, выбор модели), ломать их нельзя.
-        if isinstance(text, str) and not kwargs.get("reply_markup"):
-            clean, markup = _ari_extract_buttons(text)
-            if markup is not None:
-                kwargs["text"] = clean
-                kwargs["reply_markup"] = markup
-        return await original(*args, **kwargs)
-
-    try:
-        bot.send_message = send_message
-        bot._ari_hooked = True
-    except Exception:  # noqa: BLE001
-        # Объект бота может запрещать присваивание атрибутов. Это не повод
-        # ронять подключение: без хука кнопки просто не появятся.
-        pass
-# ARIFLAME ↑ ---------------------------------------------------------------
-
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -3709,9 +3643,6 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            # ARIFLAME: перехват [[buttons]] на самом объекте бота — через него
-            # проходят ВСЕ пути отправки, включая ответы плагинных команд.
-            _ari_hook_bot(self._bot)
             
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
@@ -4157,6 +4088,37 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        # ARIFLAME ↓ блок [[buttons]] → клавиатура. Перехват ДО всех развилок
+        # (rich fast-path, MarkdownV2, разбиение на части): любая точка после
+        # них срабатывает не для всех сообщений, и кнопки появляются через раз.
+        _ari_text, _ari_kb = _ari_extract_buttons(content)
+        if _ari_kb is not None and len(_ari_text) <= self.MAX_MESSAGE_LENGTH:
+            try:
+                _ari_msg = await self._bot.send_message(
+                    chat_id=normalize_telegram_chat_id(chat_id),
+                    text=self.format_message(_ari_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=_ari_kb,
+                )
+                return SendResult(success=True, message_id=str(_ari_msg.message_id))
+            except Exception as _ari_err:
+                # Разметка могла не пережить MarkdownV2 — шлём тем же путём
+                # простым текстом. Кнопки важнее оформления.
+                logger.warning("[ARIFLAME] кнопки: MarkdownV2 отбит (%s), шлю "
+                               "простым текстом", _ari_err)
+                try:
+                    _ari_msg = await self._bot.send_message(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        text=_strip_mdv2(_ari_text),
+                        reply_markup=_ari_kb,
+                    )
+                    return SendResult(success=True,
+                                      message_id=str(_ari_msg.message_id))
+                except Exception as _ari_err2:
+                    logger.error("[ARIFLAME] кнопки не отправились: %s", _ari_err2)
+                    content = _ari_text   # хотя бы без маркера в тексте
+        # ARIFLAME ↑
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
