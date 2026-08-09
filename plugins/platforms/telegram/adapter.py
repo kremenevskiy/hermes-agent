@@ -621,6 +621,35 @@ def _ari_extract_buttons(text: str):
     return text[: m.start()].rstrip(), InlineKeyboardMarkup(rows)
 # ARIFLAME ↑ ---------------------------------------------------------------
 
+
+# ARIFLAME ↓ ---------------------------------------------------------------
+def _ari_hook_bot(bot) -> None:
+    """Один раз обернуть send_message, чтобы блок [[buttons]] превращался
+    в кнопки независимо от того, каким путём ушло сообщение."""
+    if bot is None or getattr(bot, "_ari_hooked", False):
+        return
+    original = bot.send_message
+
+    async def send_message(*args, **kwargs):
+        text = kwargs.get("text")
+        # Кнопки, уже заданные вызывающим, важнее наших: это сценарии апстрима
+        # (подтверждение обновления, выбор модели), ломать их нельзя.
+        if isinstance(text, str) and not kwargs.get("reply_markup"):
+            clean, markup = _ari_extract_buttons(text)
+            if markup is not None:
+                kwargs["text"] = clean
+                kwargs["reply_markup"] = markup
+        return await original(*args, **kwargs)
+
+    try:
+        bot.send_message = send_message
+        bot._ari_hooked = True
+    except Exception:  # noqa: BLE001
+        # Объект бота может запрещать присваивание атрибутов. Это не повод
+        # ронять подключение: без хука кнопки просто не появятся.
+        pass
+# ARIFLAME ↑ ---------------------------------------------------------------
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -3643,6 +3672,9 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
+            # ARIFLAME: перехват [[buttons]] на самом объекте бота — через него
+            # проходят ВСЕ пути отправки, включая ответы плагинных команд.
+            _ari_hook_bot(self._bot)
             
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
