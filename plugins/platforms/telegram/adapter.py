@@ -590,7 +590,11 @@ class _PollingLifecycleAbort(RuntimeError):
 #     [[buttons]]
 #     Notion|https://…
 #     Календарь|https://…
-_ARI_BUTTONS_RE = re.compile(r"\n*\[\[buttons\]\]\s*\n(.+)$", re.S)
+# Скобки приходят ЭКРАНИРОВАННЫМИ, если сообщение уже переведено в
+# MarkdownV2: `[[buttons]]` к этому моменту выглядит как `\\[\\[buttons\\]\\]`.
+# Ровно на этом кнопки и не появлялись. Принимаем обе формы.
+_ARI_BUTTONS_RE = re.compile(
+    r"\n*\\?\[\\?\[buttons\\?\]\\?\]\s*\n(.+)$", re.S)
 
 
 def _ari_extract_buttons(text: str):
@@ -604,6 +608,10 @@ def _ari_extract_buttons(text: str):
             continue
         label, url = line.split("|", 1)
         label, url = label.strip(), url.strip()
+        # Снимаем экранирование MarkdownV2: иначе в подписи кнопки
+        # остаются слэши, а в ссылке ломаются точки и дефисы.
+        label = re.sub(r"\\(.)", r"\1", label)
+        url = re.sub(r"\\(.)", r"\1", url)
         # Только http(s): tg:// и прочие схемы Telegram в URL-кнопках не примет,
         # а невалидная кнопка роняет ВСЁ сообщение.
         if label and url.startswith(("http://", "https://")):
