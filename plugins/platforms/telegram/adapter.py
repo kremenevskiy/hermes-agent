@@ -625,6 +625,43 @@ def _ari_extract_buttons(text: str):
 # ARIFLAME ↓ ---------------------------------------------------------------
 def _ari_hook_bot(bot) -> None:
     """Один раз обернуть send_message, чтобы блок [[buttons]] превращался
+    в кнопки независимо от того, каким путём ушло сообщение.
+
+    Патчим КЛАСС: экземпляр Bot объявлен со __slots__, и присваивание атрибута
+    на нём падает. Это уже стоило одного круга отладки — хук был в коде,
+    но не в поведении.
+    """
+    if bot is None:
+        return
+    cls = type(bot)
+    if getattr(cls, "_ari_hooked", False):
+        return
+    original = cls.send_message
+
+    async def send_message(self, *args, **kwargs):
+        text = kwargs.get("text")
+        # Клавиатура, заданная вызывающим, важнее нашей: это сценарии апстрима
+        # (подтверждение обновления, выбор модели), ломать их нельзя.
+        if isinstance(text, str) and not kwargs.get("reply_markup"):
+            clean, markup = _ari_extract_buttons(text)
+            if markup is not None:
+                kwargs["text"] = clean
+                kwargs["reply_markup"] = markup
+        return await original(self, *args, **kwargs)
+
+    try:
+        cls.send_message = send_message
+        cls._ari_hooked = True
+        logger.info("[ARIFLAME] перехват кнопок установлен на %s", cls.__name__)
+    except Exception as e:  # noqa: BLE001
+        # НЕ молча: без хука кнопки не появятся, и причину искать будет негде.
+        logger.error("[ARIFLAME] перехват кнопок НЕ установлен: %s", e)
+# ARIFLAME ↑ ---------------------------------------------------------------
+
+
+# ARIFLAME ↓ ---------------------------------------------------------------
+def _ari_hook_bot(bot) -> None:
+    """Один раз обернуть send_message, чтобы блок [[buttons]] превращался
     в кнопки независимо от того, каким путём ушло сообщение."""
     if bot is None or getattr(bot, "_ari_hooked", False):
         return
