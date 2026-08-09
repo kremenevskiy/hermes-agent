@@ -4094,13 +4094,29 @@ class TelegramAdapter(BasePlatformAdapter):
         # них срабатывает не для всех сообщений, и кнопки появляются через раз.
         _ari_text, _ari_kb = _ari_extract_buttons(content)
         if _ari_kb is not None and len(_ari_text) <= self.MAX_MESSAGE_LENGTH:
+            # Маршрутизация обязательна. Без неё сообщение уходит в ОБЩИЙ топик,
+            # а человек с включёнными ветками смотрит в свою — и не видит ответа.
+            # Telegram при этом отвечает успехом и выдаёт message_id, поэтому
+            # по логам такая потеря неотличима от доставки.
+            try:
+                _ari_route = self._thread_kwargs_for_send(
+                    chat_id, self._metadata_thread_id(metadata), metadata,
+                    reply_to_message_id=(int(reply_to) if reply_to else None),
+                    reply_to_mode=self._reply_to_mode,
+                )
+            except Exception as _ari_re:  # noqa: BLE001
+                logger.warning("[ARIFLAME] не собрал маршрут ветки: %s", _ari_re)
+                _ari_route = {}
             try:
                 _ari_msg = await self._bot.send_message(
                     chat_id=normalize_telegram_chat_id(chat_id),
                     text=self.format_message(_ari_text),
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=_ari_kb,
+                    **_ari_route,
                 )
+                logger.info("[ARIFLAME] кнопки отправлены, message_id=%s",
+                            _ari_msg.message_id)
                 return SendResult(success=True, message_id=str(_ari_msg.message_id))
             except Exception as _ari_err:
                 # Разметка могла не пережить MarkdownV2 — шлём тем же путём
@@ -4112,6 +4128,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=normalize_telegram_chat_id(chat_id),
                         text=_strip_mdv2(_ari_text),
                         reply_markup=_ari_kb,
+                        **_ari_route,
                     )
                     return SendResult(success=True,
                                       message_id=str(_ari_msg.message_id))
