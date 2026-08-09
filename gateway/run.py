@@ -6366,14 +6366,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
-        action = "restarting" if self._restart_requested else "shutting down"
-        hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
-            if self._restart_requested
-            else "Your current task will be interrupted."
-        )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        # ARIFLAME ↓ штатная остановка проходит молча.
+        #
+        # Перезапуск сервиса занимает секунды, и человек его не замечает —
+        # а уведомление замечает. Десять таких подряд во время выкладки
+        # читаются как «оно постоянно ломается». Поэтому пишем только когда
+        # перезапуск запрошен явно; долгую осознанную остановку объясняет тот,
+        # кто её устроил (например, дневной лимит — своим текстом про паузу).
+        if not self._restart_requested:
+            logger.info("Штатная остановка — уведомления не шлём")
+            return
+
+        # Текст можно поменять без правки форка: ~/.hermes/RESTART.md,
+        # первая непустая строка. Нет файла — берём встроенный.
+        msg = ("🔄 Обновляюсь — это меньше минуты. Если задача была в работе, "
+               "напиши после, и я продолжу с того же места.")
+        try:
+            _ari_f = Path(os.path.expanduser("~/.hermes/RESTART.md"))
+            if _ari_f.is_file():
+                for _line in _ari_f.read_text(encoding="utf-8").splitlines():
+                    if _line.strip() and not _line.lstrip().startswith("#"):
+                        msg = _line.strip()
+                        break
+        except Exception as _ari_e:  # noqa: BLE001
+            logger.debug("RESTART.md не прочитан: %s", _ari_e)
+        # ARIFLAME ↑
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
