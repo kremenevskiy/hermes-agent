@@ -10923,7 +10923,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
                     return await self._handle_commands_command(event)
-                if _cmd_def_inner.name == "profile":
+                if _cmd_def_inner.name == "hprofile":
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
@@ -11261,7 +11261,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "commands":
             return await self._handle_commands_command(event)
         
-        if canonical == "profile":
+        if canonical == "hprofile":
             return await self._handle_profile_command(event)
 
         if canonical == "whoami":
