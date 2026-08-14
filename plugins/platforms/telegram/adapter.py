@@ -207,7 +207,7 @@ async def _shutdown_abandoned_app(app) -> None:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -229,6 +229,7 @@ except ImportError:
     Bot = Any
     Message = Any
     InlineKeyboardButton = Any
+    WebAppInfo = Any
     InlineKeyboardMarkup = Any
     LinkPreviewOptions = None
     Application = Any
@@ -597,7 +598,7 @@ _ARI_BUTTONS_RE = re.compile(
     r"\n*\\?\[\\?\[buttons\\?\]\\?\]\s*\n(.+)$", re.S)
 
 
-def _ari_extract_buttons(text: str):
+def _ari_extract_buttons(text: str, private: bool = True):
     """Вернуть (текст_без_блока, разметка_или_None)."""
     m = _ARI_BUTTONS_RE.search(text or "")
     if not m:
@@ -612,6 +613,18 @@ def _ari_extract_buttons(text: str):
         # остаются слэши, а в ссылке ломаются точки и дефисы.
         label = re.sub(r"\\(.)", r"\1", label)
         url = re.sub(r"\\(.)", r"\1", url)
+        # Мини-аппа: `webapp:https://…` открывает страницу ВНУТРИ Telegram,
+        # подписанную ключом ЭТОГО бота. Так человек попадает в свой профиль
+        # прямо из чата с агентом, а не уходит в главный бот.
+        #
+        # Только в личке: в группах Telegram такую кнопку не принимает и
+        # отбивает сообщение целиком. Не наш случай сегодня, но проверка
+        # стоит копейки, а поломка стоила бы всего ответа.
+        if label and url.startswith("webapp:"):
+            wu = url[7:].strip()
+            if wu.startswith("https://") and private:
+                rows.append([InlineKeyboardButton(label, web_app=WebAppInfo(url=wu))])
+            continue
         # Только http(s): tg:// и прочие схемы Telegram в URL-кнопках не примет,
         # а невалидная кнопка роняет ВСЁ сообщение.
         if label and url.startswith(("http://", "https://")):
