@@ -598,6 +598,15 @@ _ARI_BUTTONS_RE = re.compile(
     r"\n*\\?\[\\?\[buttons\\?\]\\?\]\s*\n(.+)$", re.S)
 
 
+def _ari_is_private(chat_id) -> bool:
+    """Личный чат. У Telegram это положительный id; у групп и каналов —
+    отрицательный. Мини-аппу можно открыть только из лички."""
+    try:
+        return int(str(chat_id).strip()) > 0
+    except Exception:  # noqa: BLE001 — чужой формат id: считаем не личкой
+        return False
+
+
 def _ari_extract_buttons(text: str, private: bool = True):
     """Вернуть (текст_без_блока, разметка_или_None)."""
     m = _ARI_BUTTONS_RE.search(text or "")
@@ -4105,7 +4114,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # ARIFLAME ↓ блок [[buttons]] → клавиатура. Перехват ДО всех развилок
         # (rich fast-path, MarkdownV2, разбиение на части): любая точка после
         # них срабатывает не для всех сообщений, и кнопки появляются через раз.
-        _ari_text, _ari_kb = _ari_extract_buttons(content)
+        _ari_text, _ari_kb = _ari_extract_buttons(content, _ari_is_private(chat_id))
         if _ari_kb is not None and len(_ari_text) <= self.MAX_MESSAGE_LENGTH:
             # Маршрутизация обязательна. Без неё сообщение уходит в ОБЩИЙ топик,
             # а человек с включёнными ветками смотрит в свою — и не видит ответа.
@@ -4824,7 +4833,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         # literally); streaming previews stay raw.
                         text = _strip_mdv2(chunk) if finalize else chunk
                     # ARIFLAME: блок [[buttons]] превращается в URL-кнопки.
-                    text, _ari_kb = _ari_extract_buttons(text)
+                    text, _ari_kb = _ari_extract_buttons(text, _ari_is_private(chat_id))
                     sent_msg = await self._bot.send_message(
                         chat_id=normalize_telegram_chat_id(chat_id),
                         text=text,
