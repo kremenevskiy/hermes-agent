@@ -11037,7 +11037,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Force-clean the sentinel so the session is unlocked.
                     self._release_running_agent_state(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
-                    return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
+                    # ARIFLAME: ответ на /stop — команда есть в меню, значит
+                    # её ответ человек видит регулярно. «Session unlocked» —
+                    # наше состояние, а не его.
+                    return EphemeralReply(_ariflame_line("ariflame.stop.force"))
                 # Queue the message so it will be picked up after the
                 # agent starts.
                 adapter = self._adapter_for_source(source)
@@ -11573,7 +11576,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_voice_command(event)
 
         if self._draining:
-            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+            # ARIFLAME: третье место с той же фразой — см. drain.busy.
+            return _ariflame_line("ariflame.drain.busy")
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -14277,7 +14281,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "platform. Ask an admin to add you to allow_admin_from "
                 "or to set user_allowed_commands."
             )
-        return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
+        # ARIFLAME: список разрешённых команд, allow_admin_from и /whoami —
+        # это внутренности доступа. Человеку достаточно знать, что команда
+        # не его, и куда смотреть за своими.
+        logger.info("ARIFLAME: /%s закрыта, доступны: %s", canonical_cmd, suffix)
+        return _ariflame_line("ariflame.command.denied", command=canonical_cmd)
 
 
 
@@ -22266,33 +22274,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
                     _timed_out_agent.interrupt(_INTERRUPT_REASON_TIMEOUT)
 
-                _timeout_mins = int(_agent_timeout // 60) or 1
-
-                # Construct a user-facing message with diagnostic context.
-                _diag_lines = [
-                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
-                ]
-                if _cur_tool:
-                    _diag_lines.append(
-                        f"The agent appears stuck on tool `{_cur_tool}` "
-                        f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
-                    )
-                else:
-                    _diag_lines.append(
-                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
-                        "The agent may have been waiting on an API response."
-                    )
-                _diag_lines.append(
-                    "To increase the limit, set agent.gateway_timeout in config.yaml "
-                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                    "Try again, or use /reset to start fresh."
-                )
-
+                # ARIFLAME: диагностика этого таймаута целиком уже в
+                # logger.error выше — там и имя тула, и номер итерации, и
+                # сколько секунд тишины. Человеку из неё не годится ничего:
+                # ни `mcp__every_agent_media__job_status`, ни «set
+                # agent.gateway_timeout in config.yaml and restart the
+                # gateway», ни /reset, которого у него нет. Ему важно одно:
+                # ждать больше нечего, задача снята.
                 response = {
-                    "final_response": "\n".join(_diag_lines),
+                    "final_response": _ariflame_line("ariflame.working.timed_out"),
                     "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                     "api_calls": _iter_n,
                     "tools": tools_holder[0] or [],

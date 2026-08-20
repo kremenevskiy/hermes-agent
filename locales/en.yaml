@@ -456,6 +456,7 @@ ariflame:
     minutes:  "⏳ Still working — {minutes} min so far. I'll write as soon as I have something."
     start:    "⏳ Still working — I'll write as soon as I have something."
     stalled:  "⚠️ This is taking longer than usual and there's no answer yet. You can keep waiting, or send /stop to cancel."
+    timed_out: "⏱️ The task got stuck — no answer ever came, so I dropped it. Send it again; if it sticks again, let's break it into smaller steps."
 
   status:
     compacted: "◐ Tidied up the conversation so nothing gets lost — carrying on."
@@ -476,7 +477,11 @@ ariflame:
     maintenance: "⏳ Maintenance is running, so I'm not taking new tasks yet. It won't be long — write again shortly."
 
   command:
-    busy: "⏳ A task is running — /{command} won't work mid-turn. Wait for the answer or send /stop."
+    busy:   "⏳ A task is running — /{command} won't work mid-turn. Wait for the answer or send /stop."
+    denied: "⛔ /{command} isn't available to me here. See /pomosch for what is."
+
+  stop:
+    force: "⚡ Stopped. I was only just starting up — I'm free now, go ahead."
 
   compaction:
     failed: "⚠️ I couldn't tidy up the conversation. Nothing was lost, but it stayed long — if things get slow, send /new."
