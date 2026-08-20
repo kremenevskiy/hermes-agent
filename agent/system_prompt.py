@@ -508,7 +508,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # session resume without a stored prompt).  The model can still query the
     # exact wall-clock time via tools when it actually needs it.
     # Credit: @iamfoz (PR #20451).
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+    # ARIFLAME: this line is baked into the cached system prompt and is only
+    # rebuilt at a compaction boundary, so on a long session it is days stale —
+    # people argued with the agent about what day it was.  It stays date-only
+    # and cache-stable, but it now says what it actually is (when the session
+    # started) and points at the live stamp that rides every user message
+    # (``<current-datetime>``, injected in agent/turn_context.py).  Fixing it
+    # here instead would mean a new system prompt every turn — a full prefix
+    # cache miss on every single turn, which is real money.
+    timestamp_line = (
+        f"Conversation started: {now.strftime('%A, %B %d, %Y')} "
+        f"(this is when this session began, NOT today's date — the current "
+        f"date and time arrive with every user message inside a "
+        f"<current-datetime> tag; always trust that one)"
+    )
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:

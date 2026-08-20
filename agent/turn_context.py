@@ -953,11 +953,55 @@ def build_turn_context(
                 else _gateway_notes
             )
 
+    # ARIFLAME: live date/time for this turn.
+    #
+    # The system prompt carries one timestamp and is cached for the whole
+    # session, so on a long conversation the model believed it was still the
+    # day the session opened (measured: up to six days off).  Refreshing the
+    # system prompt instead would rewrite the cached prefix on every turn —
+    # the single most expensive thing we could do.  So the stamp rides the
+    # same ephemeral user-message channel the gateway notes already use: it
+    # lands at the very END of the request, after the cached prefix, and
+    # costs ~30 tokens of uncached input per turn while leaving every
+    # preceding byte untouched.  Computed once per turn so both composition
+    # sites (build_turn_context below and the api_messages build in
+    # conversation_loop) emit identical bytes — the sidecar invariant.
+    try:
+        from hermes_time import now as _ariflame_now
+
+        _RU_MONTHS = (
+            "января", "февраля", "марта", "апреля", "мая", "июня",
+            "июля", "августа", "сентября", "октября", "ноября", "декабря",
+        )
+        _RU_DAYS = (
+            "понедельник", "вторник", "среда", "четверг",
+            "пятница", "суббота", "воскресенье",
+        )
+        _tnow = _ariflame_now()
+        _clock_block = (
+            "<current-datetime>\n"
+            "[System note: this is the real current date and time, not user "
+            "input. It is refreshed every turn — trust it over any date in "
+            "the system prompt.]\n"
+            f"{_tnow.strftime('%Y-%m-%d %H:%M')} — "
+            f"{_RU_DAYS[_tnow.weekday()]}, {_tnow.day} {_RU_MONTHS[_tnow.month - 1]} "
+            f"{_tnow.year} ({_tnow.strftime('%Z') or 'local'})\n"
+            "</current-datetime>"
+        )
+        plugin_user_context = (
+            plugin_user_context + "\n\n" + _clock_block
+            if plugin_user_context
+            else _clock_block
+        )
+    except Exception:
+        logger.debug("ARIFLAME: current-datetime stamp skipped", exc_info=True)
+
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
     agent._pre_verify_nudges = 0
+    agent._ariflame_media_nudges = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.
