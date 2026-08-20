@@ -14,6 +14,18 @@ Improvements over v2:
   - Tool output pruning before LLM summarization (cheap pre-pass)
   - Scaled summary budget (proportional to compressed content)
   - Richer tool call/result detail in summarizer input
+
+ARIFLAME (20.08.2026), разбор в docs/incidents/2026-08-20-memory.md §1.4.
+Апстрим писал этот файл для CLI-агента, у которого задача одноразовая: всё, что
+попало в саммари, по определению закрыто. У нас один человек ведёт одну тему
+неделями, поэтому:
+  - у саммари два срока жизни, а не один: STANDING-секции (ТЗ, договорённости,
+    ограничения, тон, отвергнутое, факты) действуют, HISTORICAL-секции остаются
+    справкой. Рамка ``SUMMARY_PREFIX`` разводит их по разным правилам вместо
+    общего «discard entirely»;
+  - бюджет саммари включает стоимость переноса старого — иначе «сохрани всё»
+    и «уложись в N токенов» противоречат друг другу, и пересказ усыхает;
+  - середина сообщения человека не режется по той же мерке, что выдача тула.
 """
 
 import hashlib
@@ -94,28 +106,86 @@ HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
 HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
 
+# ARIFLAME: секции, которые НЕ устаревают вместе с ходом разговора.
+#
+# Апстримовская рамка знает ровно один срок жизни: «было в компактнутых ходах —
+# значит закрыто». Для CLI-агента это правда: задача одноразовая, следующий
+# запуск начинается с чистого листа. У нас один человек ведёт одну тему
+# неделями, и в саммари лежат две разные по сроку жизни вещи: что СДЕЛАНО
+# (закрыто) и о чём ДОГОВОРИЛИСЬ (действует, пока человек не отменит).
+# Апстрим складывает их в один мешок и велит мешок выбросить.
+#
+# Разделение сделано ЗАГОЛОВКАМИ, а не смягчением запрета: запрет «не
+# доделывай сам» остаётся дословно на «Historical *», а действующее переезжает
+# в отдельные секции с собственным правилом. Так агент по-прежнему не может
+# самовольно воскресить закрытую задачу — он лишь перестаёт забывать ТЗ, тон и
+# табу. Отмена договорённости не удаляется молча, а переезжает в
+# «Rejected & Retired» — иначе «мы же отменили» проверить нечем.
+STANDING_BRIEF_HEADING = "## Standing Brief"
+STANDING_AGREEMENTS_HEADING = "## Standing Agreements"
+CONSTRAINTS_HEADING = "## Constraints & Preferences"
+VOICE_AND_TONE_HEADING = "## Voice & Tone"
+REJECTED_HEADING = "## Rejected & Retired"
+KEY_FACTS_HEADING = "## Key Facts & Values"
+
+# Порядок важен: перечисление уезжает в рамку и в шаблон как есть.
+STANDING_HEADINGS: tuple[str, ...] = (
+    STANDING_BRIEF_HEADING,
+    STANDING_AGREEMENTS_HEADING,
+    CONSTRAINTS_HEADING,
+    VOICE_AND_TONE_HEADING,
+    REJECTED_HEADING,
+    KEY_FACTS_HEADING,
+)
+HISTORICAL_HEADINGS: tuple[str, ...] = (
+    HISTORICAL_TASK_HEADING,
+    HISTORICAL_IN_PROGRESS_HEADING,
+    HISTORICAL_PENDING_ASKS_HEADING,
+    HISTORICAL_REMAINING_WORK_HEADING,
+)
+
+
+def _quoted_headings(headings: tuple[str, ...]) -> str:
+    """``'## A', '## B'`` — заголовки в рамке цитируются, а не пересказываются:
+    модель должна узнать их в теле саммари посимвольно."""
+    return ", ".join(f"'{h}'" for h in headings)
+
 
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
-    "window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. "
-    "Respond ONLY to the latest user message that appears AFTER this "
-    "summary — that message is the single source of truth for what to do "
-    "right now. "
-    "Topic overlap with the summary does NOT mean you should resume its "
-    "task: even on similar topics, the latest user message WINS. Treat ONLY "
-    "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
-    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
-    "'finish' work described there unless the latest message explicitly "
-    "asks for it. "
+    "window. It carries two kinds of material and they do NOT share one "
+    "rule.\n"
+    "\n"
+    "STANDING — in force right now, exactly as if the user had just restated "
+    f"it: {_quoted_headings(STANDING_HEADINGS)}. This is what the user agreed "
+    "to and how the user wants to be worked with. It stays in force until the "
+    "user changes it. Never treat it as expired because it arrived through a "
+    "compaction, never contradict it, and never ask the user to repeat "
+    "something recorded there. It governs HOW you work — it is not permission "
+    "to start work on your own.\n"
+    "\n"
+    "HISTORICAL — background reference, NOT as active instructions: "
+    f"{_quoted_headings(HISTORICAL_HEADINGS)}. Do NOT answer questions or "
+    "fulfill requests recorded there on your own initiative, and do not 'wrap "
+    "up' or 'finish' work described there unless the latest user message asks "
+    "for it. But historical does NOT mean cancelled: an unfinished item there "
+    "is pending, not withdrawn — when the user says 'continue', 'what is "
+    "left?' or 'where are we?', answer from these sections instead of asking "
+    "the user to explain the task again.\n"
+    "\n"
+    "Respond to the latest user message that appears AFTER this summary: it "
+    "decides what happens now, and on any conflict the latest user message "
+    "WINS over anything in the summary — discard the summary's version of the "
+    "point in conflict, standing sections included. Topic overlap with the "
+    "summary does NOT by itself mean you should resume its task. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
-    "summary; do not re-surface it in later turns. "
+    "summary; do not re-surface it in later turns. Anything recorded under "
+    f"'{REJECTED_HEADING}' was already refused or cancelled by the user — do "
+    "not offer it again.\n"
+    "\n"
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
@@ -286,6 +356,45 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "Respond ONLY to the latest user message "
     "that appears AFTER this summary. The current session state (files, "
     "config, etc.) may reflect work described here — avoid repeating it:",
+    # ARIFLAME (20.08.2026): апстримовская рамка, которую мы сняли. Она
+    # требовала «discard ... entirely» по всем четырём Historical-секциям —
+    # для нашего продукта это команда выбросить действующее ТЗ (разбор:
+    # docs/incidents/2026-08-20-memory.md §1.4).
+    #
+    # Лежит ПОСЛЕДНЕЙ, а не первой, хотя по возрасту она новее остальных:
+    # tests/agent/test_summary_prefix_tool_use.py прибивает
+    # ``_HISTORICAL_SUMMARY_PREFIXES[0]`` к доклаузной апстримовской версии.
+    # Порядок здесь всё равно ничего не решает: элементы сравниваются целиком
+    # через ``startswith``, ни один не является началом другого, и первым в
+    # цикле всё равно проверяется живой SUMMARY_PREFIX.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
+    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
+    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
 )
 
 # Restart handoff detection should be early and bounded: it needs to catch the
@@ -348,6 +457,10 @@ _SMALL_CTX_THRESHOLD_PERCENT = 0.75
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+
+# ARIFLAME: кириллица считается отдельно при оценке переносимого саммари —
+# см. ``_previous_summary_tokens``.
+_CYRILLIC_RE = re.compile(r"[Ѐ-ӿԀ-ԯ]")
 
 # MEDIA delivery directives must not reach the summarizer — if one leaks into
 # the summary, the downstream model may re-emit it as an active directive on
@@ -2065,25 +2178,100 @@ class ContextCompressor(ContextEngine):
     # Summarization
     # ------------------------------------------------------------------
 
+    def _previous_summary_tokens(self) -> int:
+        """ARIFLAME: сколько токенов уже занимает переносимое саммари.
+
+        Считаем НЕ через ``estimate_tokens_rough``: тот меряет 4 символа на
+        токен для всего, кроме CJK, а у нас саммари русское — там реально
+        ~2-2.5 символа на токен. Общая оценка занизила бы перенос вдвое, то
+        есть мы бы снова попросили модель ужать то, что тем же промптом
+        велели сохранить. Считаем кириллицу отдельно, остальное — по общему
+        правилу; лучше переоценить перенос, чем недооценить: потолок всё
+        равно режет сверху.
+        """
+        text = self._previous_summary or ""
+        if not text:
+            return 0
+        cyrillic = len(_CYRILLIC_RE.findall(text))
+        rest = len(text) - cyrillic
+        return (cyrillic + 1) // 2 + (rest + 3) // 4
+
     def _compute_summary_budget(self, turns_to_summarize: List[Dict[str, Any]]) -> int:
         """Scale summary token budget with the amount of content being compressed.
 
         The maximum scales with the model's context window (5% of context,
         capped at ``_SUMMARY_TOKENS_CEILING``) so large-context models get
         richer summaries instead of being hard-capped at 8K tokens.
+
+        ARIFLAME: к доле нового материала прибавляется размер ПЕРЕНОСИМОГО
+        саммари. Апстрим считал бюджет только от новых ходов, а промпт
+        итеративного обновления в это же время требовал сохранить всё старое —
+        два требования, из которых модель выполняет второе через уплотнение
+        первого. На живой ветке это выглядело как усыхание пересказа
+        17 369 → 14 948 → 14 869 → 8 365 символов за пять дней при растущем
+        разговоре, причём потолок ``max_summary_tokens`` не достигался ни разу
+        (поэтому поднимать потолок и было бесполезно). Теперь бюджет
+        монотонен: сохранить старое стоит ровно столько, сколько оно весит, и
+        сверху добавляется доля от нового. Сжатие остаётся возможным только
+        сверху — упёршись в потолок (там же в промпте сказано, ЧТО сокращать
+        первым).
         """
         content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
-        budget = int(content_tokens * _SUMMARY_RATIO)
+        budget = int(content_tokens * _SUMMARY_RATIO) + self._previous_summary_tokens()
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
     # Truncation limits for the summarizer input.  These bound how much of
     # each message the summary model sees — the budget is the *summary*
     # model's context window, not the main model's.
+    #
+    # ARIFLAME: лимит стал ролевым. Апстрим режет ЛЮБОЕ сообщение по 6000
+    # символов, оставляя голову и хвост, — то есть у длинного ТЗ от человека
+    # пропадает середина, а требования лежат именно там. При этом самые
+    # толстые сообщения в диалоге — не человеческие, а результаты тулов, и
+    # их середина не нужна почти никогда.
+    #
+    # Почему поднять лимит человеку безопасно: сериализация умеет только
+    # УКОРАЧИВАТЬ, а компактуемая середина по определению помещалась в окно
+    # основной модели, то есть не больше ``threshold_tokens``; порог, в свою
+    # очередь, принудительно опускается до окна вспомогательной модели
+    # (``conversation_compression.check_compression_model_feasibility``).
+    # Значит запрос к саммаризатору не может перерасти его окно из-за того,
+    # что мы меньше режем. Урезанный лимит на тулы возвращает бюджет назад.
     _CONTENT_MAX = 6000       # total chars per message body
     _CONTENT_HEAD = 4000      # chars kept from the start
     _CONTENT_TAIL = 1500      # chars kept from the end
+    _USER_CONTENT_MAX = 24000    # ТЗ человека переживает компакцию целиком
+    _USER_CONTENT_HEAD = 16000
+    _USER_CONTENT_TAIL = 7000
+    _TOOL_CONTENT_MAX = 4000     # выдача тула — самый дешёвый материал
+    _TOOL_CONTENT_HEAD = 2600
+    _TOOL_CONTENT_TAIL = 1200
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+
+    def _truncate_for_summary(self, content: str, role: str) -> str:
+        """ARIFLAME: середину режем по роли автора, а не одной меркой на всех."""
+        if role == "user":
+            cap, head, tail = (
+                self._USER_CONTENT_MAX,
+                self._USER_CONTENT_HEAD,
+                self._USER_CONTENT_TAIL,
+            )
+        elif role == "tool":
+            cap, head, tail = (
+                self._TOOL_CONTENT_MAX,
+                self._TOOL_CONTENT_HEAD,
+                self._TOOL_CONTENT_TAIL,
+            )
+        else:
+            cap, head, tail = (
+                self._CONTENT_MAX,
+                self._CONTENT_HEAD,
+                self._CONTENT_TAIL,
+            )
+        if len(content) <= cap:
+            return content
+        return content[:head] + "\n...[truncated]...\n" + content[-tail:]
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -2137,15 +2325,13 @@ class ContextCompressor(ContextEngine):
             # Tool results: keep enough content for the summarizer
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = self._truncate_for_summary(content, role)
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
             # Assistant messages: include tool call names AND arguments
             if role == "assistant":
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = self._truncate_for_summary(content, role)
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -2167,8 +2353,7 @@ class ContextCompressor(ContextEngine):
                 continue
 
             # User and other roles
-            if len(content) > self._CONTENT_MAX:
-                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+            content = self._truncate_for_summary(content, role)
             parts.append(f"[{role.upper()}]: {content}")
 
         return "\n\n".join(parts)
@@ -2520,19 +2705,71 @@ cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
 in-flight work is cancelled."
 If no outstanding task exists, write "None."]"""
             _goal_instructions = "[What the user is trying to accomplish overall]"
+            # ARIFLAME: у апстрима это была одна строка на восемь слов, и она
+            # давала ~8% объёма саммари. Именно здесь живёт всё, из-за чего
+            # человек говорит «я же просил»: сроки, форматы, цены, запреты.
             _constraints_instructions = (
-                "[User preferences, coding style, constraints, important decisions]"
+                "[Every requirement the user has set for the work itself, in the "
+                "user's own words where possible: formats, sizes and platforms; "
+                "deadlines and cadence; prices, budgets and payment details; what "
+                "must always be present (signature, disclaimer, tags); what is "
+                "forbidden (words, topics, styles, people). One line per "
+                "requirement, no grouping into prose. This section is not a "
+                "retelling — it is the checklist the next reply is graded against, "
+                'so never compress it away. If none, write "None."]'
+            )
+            _standing_brief_instructions = (
+                "[The assignment this conversation is running on, as it stands "
+                "after the latest change: what is being produced, in what volume, "
+                "for which platform or audience, by when, and at what stage it is "
+                "now. Include anything the user confirmed as ongoing (\"we do this "
+                "every week\"). Write it in the present tense as a live brief, not "
+                "as history. This section survives compaction because the user "
+                "will not repeat the brief — they will assume it is known. If this "
+                "conversation has no standing assignment (a one-off question, small "
+                'talk), write "None."]'
+            )
+            _standing_agreements_instructions = (
+                "[Decisions the user and the assistant settled on that remain in "
+                "force until the user changes them — about process (\"drafts on "
+                "Mondays\"), about content (\"vertical video only\"), about money "
+                "(\"invoice from the sole proprietorship\"). One line each, with the "
+                "reason if one was given and the date if known. A correction the "
+                "user made to earlier work is an agreement, not a passing remark: "
+                "record it. Do not list options that were merely discussed. If "
+                'none, write "None."]'
+            )
+            _voice_instructions = (
+                "[How to talk to this user and how their material must sound: "
+                "language and form of address, level of formality, reply length, "
+                "emoji and punctuation habits, words and cliches they dislike, "
+                "examples they praised or criticised. Quote the wording the user "
+                "used when correcting the tone — a tone correction is a standing "
+                'rule, not a one-off remark. If none, write "None."]'
+            )
+            _rejected_instructions = (
+                "[What the user turned down, cancelled or asked to stop, with their "
+                "wording and the date: ideas rejected, formats refused, tasks "
+                "cancelled mid-flight, agreements later revoked. This section is "
+                "what makes the standing sections safe — cancelled work is recorded "
+                "as cancelled instead of silently deleted, so it is neither resumed "
+                'nor proposed a second time. If none, write "None."]'
             )
             _resolved_questions_instructions = (
                 "[Questions the user asked that were ALREADY answered — include the "
                 "answer so it is not repeated]"
             )
+            # ARIFLAME: было «These are STALE ... must NOT act on them». Незакрытая
+            # просьба — не устаревшая, она просто ещё не выполнена; выбрасывать её
+            # значит терять то, чего человек ждёт. Запрет самоволия остаётся.
             _pending_asks_instructions = (
-                "[Questions or requests from the user that have NOT yet been answered "
-                "or fulfilled. These are STALE — they were from the compacted turns. "
-                "Write them here for reference only. The agent must NOT act on them "
-                "unless the latest user message explicitly requests it. If none, "
-                'write "None."]'
+                "[Questions or requests from the user that have NOT yet been "
+                "answered or fulfilled. They are NOT closed: carry them forward "
+                "until they are answered or the user drops them. Quote each in the "
+                "user's own words, with the date if known. The assistant does not "
+                "start them on its own initiative — the latest user message decides "
+                "what happens now — but it must be able to name them when the user "
+                'asks what is left. If none, write "None."]'
             )
         else:
             _language_and_provenance_rule = (
@@ -2553,6 +2790,21 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
             _constraints_instructions = (
                 "[Runtime, configuration, and technical constraints only. Do not "
                 "invent user preferences.]"
+            )
+            # ARIFLAME: в сессии без человека договариваться не с кем. Пустые
+            # секции дешевле, чем выдуманные: заполненная «договорённость» из
+            # кроновой сессии переехала бы в следующее саммари как факт.
+            _standing_brief_instructions = (
+                "[Write exactly: None. No user-authored turns exist.]"
+            )
+            _standing_agreements_instructions = (
+                "[Write exactly: None. No user-authored turns exist.]"
+            )
+            _voice_instructions = (
+                "[Write exactly: None. No user-authored turns exist.]"
+            )
+            _rejected_instructions = (
+                "[Write exactly: None. No user-authored turns exist.]"
             )
             _resolved_questions_instructions = (
                 "[Write exactly: None. No user-authored questions exist.]"
@@ -2593,40 +2845,60 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
             _temporal_anchoring_rule = ""
 
         # Shared structured template (used by both paths).
+        #
+        # ARIFLAME: состав секций переписан под наш продукт. Апстримовский
+        # набор — снимок рабочего каталога кодового агента: ветка, pytest,
+        # «PATCH config.py:45». Для ассистента, который неделями ведёт одну
+        # тему одного человека, дороже всего то, чего в апстримовском наборе
+        # не было вовсе: действующее ТЗ, договорённости, тон и список
+        # отвергнутого. Шесть STANDING-секций идут сразу за снимком задачи —
+        # и потому, что рамка объявляет их действующими, и потому, что при
+        # нехватке бюджета режется низ, а не верх.
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
 {_historical_task_instructions}
+
+{STANDING_BRIEF_HEADING}
+{_standing_brief_instructions}
+
+{STANDING_AGREEMENTS_HEADING}
+{_standing_agreements_instructions}
+
+{CONSTRAINTS_HEADING}
+{_constraints_instructions}
+
+{VOICE_AND_TONE_HEADING}
+{_voice_instructions}
+
+{REJECTED_HEADING}
+{_rejected_instructions}
+
+{KEY_FACTS_HEADING}
+[Concrete values that cannot be reconstructed from the conversation that follows: names of people and projects, prices and numbers, links, account handles, addresses, dates, exact error messages, configuration values. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
 
 ## Goal
 {_goal_instructions}
 
-## Constraints & Preferences
-{_constraints_instructions}
-
 ## Completed Actions
-[Numbered list of concrete actions taken — include tool used, target, and outcome.
+[Numbered list of concrete actions taken — what was done, on what, and how it ended.
 Format each as: N. ACTION target — outcome [tool: name]
-Example:
-1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
-2. PATCH config.py:45 — changed `==` to `!=` [tool: patch]
-3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
-Be specific with file paths, commands, line numbers, and results.]
+Examples:
+1. WROTE three post drafts for the September plan — user approved #2, rejected #1 and #3
+2. GENERATED cover image 1080x1350 — sent, user asked for a warmer palette
+3. PATCH config.py:45 — changed `==` to `!=` [tool: patch]
+Be specific: file names, links, numbers, the user's reaction. Where the user reacted, the reaction matters more than the action.]
 
 ## Active State
-[Current working state — include:
-- Working directory and branch (if applicable)
-- Modified/created files with brief note on each
-- Test status (X/Y passing)
-- Any running processes or servers
-- Environment details that matter]
+[Where the work stands right now — include:
+- What is ready, what is sent, what is awaiting the user's reply
+- Materials produced and where they are (file names, links)
+- For technical work: working directory, branch, test status, running processes
+- Anything the next turn must not redo]
 
 {HISTORICAL_IN_PROGRESS_HEADING}
-[Work currently underway — what was being done when compaction fired]
+[Work underway when compaction fired — what was being done and how far it got]
 
 ## Blocked
-[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
-
-## Key Decisions
-[Important technical decisions and WHY they were made]
+[What is stuck and on what: missing access, missing material, a decision the user still owes, an unresolved error. Include exact error messages.]
 
 ## Resolved Questions
 {_resolved_questions_instructions}
@@ -2635,20 +2907,43 @@ Be specific with file paths, commands, line numbers, and results.]
 {_pending_asks_instructions}
 
 ## Relevant Files
-[Files read, modified, or created — with brief note on each]
+[Files and materials read, produced, or sent — with a brief note on each]
 
 {HISTORICAL_REMAINING_WORK_HEADING}
-[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
+[What is still to be done under the standing brief. The assistant does not resume this on its own initiative — but it is pending, not cancelled, and must be nameable when the user asks what is left.]
 
-## Critical Context
-[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
-
-Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
+Target ~{summary_budget} tokens. Be CONCRETE — names, numbers, dates, links, exact wording of the user's requirements, file paths, command outputs, error messages. Avoid vague descriptions like "made some changes" — say exactly what changed.
+Each fact belongs in exactly ONE section — the one that fits it best. Never repeat the same line in two sections: a duplicated requirement costs budget the rest of the summary needs, and on the next update it is unclear which copy is authoritative.
+If everything does not fit, cut in this order: detail inside "## Completed Actions", then "## Resolved Questions", then "## Relevant Files". NEVER shrink {_quoted_headings(STANDING_HEADINGS)} to make room — those sections are the ones that cannot be recovered from the conversation that follows.
+Keep the section headings exactly as written above, in English, even when the body is written in another language.
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
         if self._previous_summary:
-            # Iterative update: preserve existing info, add new progress
+            # ARIFLAME: перенос старого саммари теперь оплачен бюджетом
+            # (см. ``_compute_summary_budget``), и промпт об этом говорит
+            # прямо. Раньше здесь стояло «PRESERVE all existing information»
+            # при бюджете, посчитанном только от новых ходов, — модель
+            # выполняла оба требования единственным доступным способом:
+            # ужимала старое. Плюс апстрим велел обновить секцию «## Active
+            # Task», которой в шаблоне нет с момента переименования в
+            # «Historical Task Snapshot», — модель искала несуществующий
+            # заголовок.
+            _carry_tokens = self._previous_summary_tokens()
+            _carry_note = (
+                f"The previous summary already costs about {_carry_tokens} tokens "
+                "and the target below is calculated WITH that cost included — do "
+                "NOT re-compress or thin it out to make room for the new turns. "
+                if _carry_tokens
+                else ""
+            )
+            _at_ceiling_note = (
+                "The target is at its ceiling: if the result does not fit, drop "
+                "detail in the order given at the end of the structure, never "
+                "from the standing sections. "
+                if _carry_tokens and summary_budget >= self.max_summary_tokens
+                else ""
+            )
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
@@ -2659,7 +2954,10 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}{_memory_section}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still in force. {_carry_note}{_at_ceiling_note}ADD new completed actions to the numbered list (continue numbering). Move items from the in-progress section to "## Completed Actions" when done. Move answered questions to "## Resolved Questions". Update "## Active State" to reflect the current state.
+The standing sections ({_quoted_headings(STANDING_HEADINGS)}) change ONLY on an explicit signal from the user: a new requirement or agreement is ADDED with the user's own wording; one the user cancelled or overrode MOVES to "{REJECTED_HEADING}" together with what they said. Never delete a standing item silently, and never treat one as obsolete merely because the new turns did not mention it — silence is not cancellation.
+If the previous summary uses a heading that is not in the structure below, move its content into the closest matching section instead of dropping it.
+CRITICAL: Update "{HISTORICAL_TASK_HEADING}" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:
@@ -3262,7 +3560,12 @@ This compaction should PRIORITISE preserving all information related to the focu
                 text = text[: _ACTIVE_TASK_MAX_CHARS - 15].rstrip() + " ...[truncated]"
             return (
                 f"User asked (deterministic, from compacted turns): {text!r}\n"
-                "Historical only; newer protected-tail messages after this summary win."
+                "Historical only; newer protected-tail messages after this summary win. "
+                # ARIFLAME: «историческое» апстрим и «отменённое» — разные вещи.
+                # Без этой строки якорь читается как «просьба уже неактуальна»,
+                # и агент на «продолжим» переспрашивает, что именно продолжать.
+                "Historical does not mean cancelled: if it was never answered it is "
+                "still pending — see the standing sections for the brief it belongs to."
             )
         return None
 
