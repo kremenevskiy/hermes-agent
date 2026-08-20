@@ -15012,7 +15012,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            # ARIFLAME: the reply text is already streamed to the user at this
+            # point, so a dropped attachment cannot be folded into it — send
+            # the notice as its own short message instead of staying silent.
+            _ariflame_dropped: list = []
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                media_files, dropped=_ariflame_dropped
+            )
             # Strip image URLs from the cleaned text for parity with the
             # non-streaming chain, but do NOT run extract_local_files here:
             # post-stream delivery is explicit-only (#20834). Bare local paths
@@ -15021,6 +15027,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.extract_images(cleaned)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+
+            if _ariflame_dropped:
+                _ariflame_notice = BasePlatformAdapter.ariflame_undelivered_notice(
+                    _ariflame_dropped
+                )
+                if _ariflame_notice:
+                    logger.warning(
+                        "ARIFLAME: %d post-stream attachment(s) undelivered — telling the user",
+                        len(_ariflame_dropped),
+                    )
+                    try:
+                        await adapter.send(
+                            chat_id=event.source.chat_id,
+                            content=_ariflame_notice,
+                            metadata=_thread_meta,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "ARIFLAME: could not send the undelivered-attachment notice",
+                            exc_info=True,
+                        )
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -15226,8 +15253,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if response:
                 media_files, response = adapter.extract_media(response)
                 from gateway.platforms.base import BasePlatformAdapter
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                # ARIFLAME: report what was thrown away (see base.py).
+                _ariflame_dropped: list = []
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(
+                    media_files, dropped=_ariflame_dropped
+                )
                 images, text_content = adapter.extract_images(response)
+                if _ariflame_dropped:
+                    _ariflame_notice = BasePlatformAdapter.ariflame_undelivered_notice(
+                        _ariflame_dropped
+                    )
+                    if _ariflame_notice:
+                        text_content = (
+                            f"{text_content}\n\n{_ariflame_notice}"
+                            if text_content else _ariflame_notice
+                        )
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'

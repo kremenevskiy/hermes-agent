@@ -3671,8 +3671,16 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(media_files, dropped=None) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths.
+
+        ARIFLAME: ``dropped`` is an optional out-list that collects the paths
+        this filter threw away. Every rejection used to end at a logger.warning
+        and nothing else — the directive was stripped from the text and the
+        person was left reading about an attachment that never arrived. Callers
+        that pass a list can now say so out loud. Optional on purpose: the
+        existing call sites keep working untouched.
+        """
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
@@ -3681,11 +3689,16 @@ class BasePlatformAdapter(ABC):
                 safe_media.append((safe_path, bool(is_voice)))
             else:
                 logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
+                if dropped is not None:
+                    dropped.append(raw)
         return safe_media
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths) -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
+    def filter_local_delivery_paths(file_paths, dropped=None) -> List[str]:
+        """Drop unsafe bare local file paths and normalize accepted paths.
+
+        ARIFLAME: see ``filter_media_delivery_paths`` for ``dropped``.
+        """
         safe_paths: List[str] = []
         for file_path in file_paths or []:
             raw = str(file_path)
@@ -3694,7 +3707,28 @@ class BasePlatformAdapter(ABC):
                 safe_paths.append(safe_path)
             else:
                 logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
+                if dropped is not None:
+                    dropped.append(raw)
         return safe_paths
+
+    @staticmethod
+    def ariflame_undelivered_notice(dropped) -> str:
+        """User-facing line for attachments that could not be delivered.
+
+        Never contains the path: it is a host filesystem path and the rest of
+        this module goes out of its way not to leak the Hermes home layout
+        into chat. The person does not need the path — they need to know the
+        file is not coming.
+        """
+        if not dropped:
+            return ""
+        try:
+            from agent.ariflame_text import at
+
+            return at("ariflame.media_undelivered", count=len(dropped)) or ""
+        except Exception:
+            logger.debug("ARIFLAME: undelivered notice lookup failed", exc_info=True)
+            return ""
 
 
     @staticmethod
@@ -5136,7 +5170,13 @@ class BasePlatformAdapter(ABC):
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
-                media_files = self.filter_media_delivery_paths(media_files)
+                # ARIFLAME: keep what the filter throws away so the person can
+                # be told, instead of silently receiving text about a file
+                # that never arrives.
+                _ariflame_dropped: list = []
+                media_files = self.filter_media_delivery_paths(
+                    media_files, dropped=_ariflame_dropped
+                )
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -5155,9 +5195,24 @@ class BasePlatformAdapter(ABC):
                     # system/command notices so config paths stay visible text
                     # instead of becoming native uploads.
                     local_files, text_content = self.extract_local_files(text_content)
-                    local_files = self.filter_local_delivery_paths(local_files)
+                    local_files = self.filter_local_delivery_paths(
+                        local_files, dropped=_ariflame_dropped
+                    )
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+
+                # ARIFLAME: an undelivered attachment must never be silent.
+                if _ariflame_dropped:
+                    _ariflame_notice = self.ariflame_undelivered_notice(_ariflame_dropped)
+                    if _ariflame_notice:
+                        logger.warning(
+                            "[%s] %d attachment(s) could not be delivered — telling the user",
+                            self.name, len(_ariflame_dropped),
+                        )
+                        text_content = (
+                            f"{text_content}\n\n{_ariflame_notice}"
+                            if text_content else _ariflame_notice
+                        )
 
                 # A2 (#29346): extraction can reduce a non-empty response to
                 # empty text with no attachment, and the `if text_content` guard

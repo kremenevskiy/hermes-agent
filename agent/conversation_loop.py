@@ -5786,6 +5786,59 @@ def run_conversation(
                 ):
                     messages.pop()
 
+                # ── ARIFLAME: an attachment that was never created ──
+                #
+                # The model can name a file that does not exist. Downstream the
+                # gateway resolves MEDIA: paths strictly, drops the ones that
+                # fail, strips the directive out of the text and logs a warning
+                # nobody reads — so the person is told three pictures are ready
+                # and receives none. Catch it here, while the turn is still
+                # open, and give the model the failure back as a turn error so
+                # it corrects itself inside the SAME message.
+                #
+                # Capped at one retry: producing media costs real money, and a
+                # model that cannot make the file on the second attempt is told
+                # (by the nudge) to say so instead. If the text was already
+                # streamed to the user there is nothing left to correct, so we
+                # stand down and let the delivery-side notice do the honest
+                # part rather than emit a duplicate reply.
+                _media_nudge = None
+                try:
+                    from agent.media_promise import build_media_nudge, missing_media_paths
+
+                    if getattr(agent, "_ariflame_media_nudges", 0) < 1:
+                        _missing_media = missing_media_paths(final_response)
+                        if _missing_media and not agent._interim_content_was_streamed(
+                            final_response or ""
+                        ):
+                            _media_nudge = build_media_nudge(_missing_media)
+                            logger.warning(
+                                "ARIFLAME: reply promises %d file(s) that do not "
+                                "exist — asking the model to fix it in this turn.",
+                                len(_missing_media),
+                            )
+                except Exception:
+                    logger.debug("ARIFLAME media-promise check failed", exc_info=True)
+
+                if _media_nudge:
+                    agent._ariflame_media_nudges = (
+                        getattr(agent, "_ariflame_media_nudges", 0) + 1
+                    )
+                    final_msg["finish_reason"] = "media_missing"
+                    # Deliberately NOT emitted to the user as an interim
+                    # message: the whole defect is that this text claims files
+                    # that do not exist. It stays in `messages` only so the
+                    # model can see what it just wrote.
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _media_nudge,
+                        "_ariflame_media_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    final_response = None
+                    continue
+
                 try:
                     from agent.verification_stop import (
                         build_verify_on_stop_nudge,
