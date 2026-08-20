@@ -12598,22 +12598,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if should_notify:
                     adapter = self._adapter_for_source(source)
                     if adapter:
+                        # ARIFLAME: плашку читает НЕ инженер, а человек, который
+                        # платит за помощника. Английский текст с «conversation
+                        # history cleared» и советом «adjust config.yaml» пугает
+                        # и врёт по сути: память о человеке никуда не делась,
+                        # оборвалась только нить этой темы. Причину сброса тоже
+                        # не называем в терминах политики — она ему не поможет.
+                        from agent.ariflame_text import at as _at
+
                         if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
+                            head = _at("ariflame.session_reset.suspended")
                         elif reset_reason == "resume_pending_expired":
-                            reason_text = "gateway restart recovery timed out"
+                            head = _at("ariflame.session_reset.recovered")
                         elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
+                            head = _at("ariflame.session_reset.daily")
                         else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
+                            head = _at("ariflame.session_reset.idle")
+                        notice = "{} {}\n{}\n\n{}".format(
+                            head,
+                            _at("ariflame.session_reset.kept"),
+                            _at("ariflame.session_reset.ask"),
+                            _at("ariflame.session_reset.resume"),
                         )
                         try:
                             session_info = await asyncio.to_thread(

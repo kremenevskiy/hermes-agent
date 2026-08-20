@@ -433,6 +433,14 @@ gateway:
 # to the person reading the chat.
 # ---------------------------------------------------------------------
 ariflame:
+  session_reset:
+    idle:      "◐ We haven't talked in this topic for a while, so I'm starting the conversation fresh."
+    daily:     "◐ Starting the conversation fresh — I do that daily."
+    suspended: "◐ The previous conversation was interrupted, so I'm starting fresh."
+    recovered: "◐ I restarted and could not pick the previous conversation back up, so I'm starting fresh."
+    kept:      "Everything I know about you and your projects is still here — I just don't recall this thread."
+    ask:       "Tell me in one line what we are working on."
+    resume:    "You can browse earlier conversations with /resume."
   media_undelivered: "⚠️ I couldn't attach the file — it wasn't on disk. The text above was sent, the attachment wasn't. Tell me if you want me to try again."
   busy:
     steered:            "⏩ Got your message — I'll take it into account right after the current step."
