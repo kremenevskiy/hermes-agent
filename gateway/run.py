@@ -6185,6 +6185,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         )
 
+        # ARIFLAME: this text goes to a non-programmer, in Russian.
+        #
+        # Two things were wrong with it. It was English ("Steered into current
+        # run", "Queued for the next turn") in a Russian conversation — 71 of
+        # these to one client and 93 to another in three days, and one of them
+        # wrote "ничего не понимаю". And it carried our telemetry: "12 min
+        # elapsed, iteration 7/40, running: clarify" means nothing to the
+        # person and everything to us, so it belongs in the log, which is
+        # where it now goes. The strings themselves live in
+        # locales/<lang>.yaml under ariflame.busy.* (see agent/ariflame_text).
         if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 summary = running_agent.get_activity_summary()
@@ -6203,40 +6213,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        if status_parts:
+            logger.info(
+                "Busy ack for session %s (%s)", session_key, ", ".join(status_parts)
+            )
+
+        from agent.ariflame_text import at as _at
+
         if is_steer_mode:
-            message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
-            )
+            message = _at("ariflame.busy.steered")
         elif is_redirect_mode:
-            message = (
-                f"↪ Redirected current run{status_detail}. "
-                f"I'll adjust using your correction."
-            )
+            message = _at("ariflame.busy.redirected")
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
             # follow-up didn't accidentally kill the subagent and
             # discovers `/stop` as the explicit escape hatch.
-            message = (
-                f"⏳ Subagent working{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
-            )
+            message = _at("ariflame.busy.queued_subagent")
         elif is_queue_mode and demoted_for_compression:
-            message = (
-                f"⏳ Compressing context{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
-            )
+            message = _at("ariflame.busy.queued_compressing")
         elif is_queue_mode:
-            message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
-            )
+            message = _at("ariflame.busy.queued")
         else:
-            message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
-            )
+            message = _at("ariflame.busy.interrupting")
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the

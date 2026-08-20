@@ -426,3 +426,18 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+
+# ---------------------------------------------------------------------
+# ARIFLAME. Our own service strings. Kept free of telemetry on purpose:
+# elapsed minutes, iteration counters and tool names go to the log, not
+# to the person reading the chat.
+# ---------------------------------------------------------------------
+ariflame:
+  media_undelivered: "⚠️ I couldn't attach the file — it wasn't on disk. The text above was sent, the attachment wasn't. Tell me if you want me to try again."
+  busy:
+    steered:            "⏩ Got your message — I'll take it into account right after the current step."
+    redirected:         "↪ Got your correction — I'm following it from here."
+    queued:             "⏳ Your message is queued — I'll reply as soon as the current task is done."
+    queued_subagent:    "⏳ A long task is running. Your message is queued and I'll get to it once that finishes. Send /stop to cancel everything."
+    queued_compressing: "⏳ I'm tidying up the conversation so nothing gets lost. Your message is queued and I'll get to it right after. Send /stop to cancel everything."
+    interrupting:       "⚡ Stopping the current task — replying now."

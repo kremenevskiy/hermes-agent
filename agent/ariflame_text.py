@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import lru_cache
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -28,17 +29,42 @@ logger = logging.getLogger(__name__)
 ARIFLAME_DEFAULT_LANGUAGE = "ru"
 
 
-def ariflame_language() -> str:
-    """Resolve the language for our service strings (env > config > ru)."""
+@lru_cache(maxsize=1)
+def _explicit_config_language() -> str:
+    """``display.language`` as literally written in config.yaml, or "".
+
+    Deliberately NOT ``load_config()``: that merges the shipped defaults, and
+    ``display.language: en`` is one of them — so every box looks like it was
+    explicitly set to English when nobody ever chose anything.  A key present
+    in the file is a decision; an absent key is not.
+    """
     try:
-        from agent.i18n import _config_language_cached, _normalize_lang
+        import yaml
+        from hermes_cli.config import get_config_path
+
+        path = get_config_path()
+        if not path or not os.path.isfile(path):
+            return ""
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
+        value = ((raw.get("display") or {}) if isinstance(raw, dict) else {}).get("language")
+        return str(value).strip() if value else ""
+    except Exception:
+        logger.debug("ARIFLAME: could not read display.language", exc_info=True)
+        return ""
+
+
+def ariflame_language() -> str:
+    """Resolve the language for our service strings (env > config file > ru)."""
+    try:
+        from agent.i18n import _normalize_lang
 
         env_lang = os.environ.get("HERMES_LANGUAGE")
         if env_lang:
             return _normalize_lang(env_lang)
-        cfg_lang = _config_language_cached()
+        cfg_lang = _explicit_config_language()
         if cfg_lang:
-            return cfg_lang
+            return _normalize_lang(cfg_lang)
     except Exception:
         logger.debug("ARIFLAME: language resolution failed", exc_info=True)
     return ARIFLAME_DEFAULT_LANGUAGE
