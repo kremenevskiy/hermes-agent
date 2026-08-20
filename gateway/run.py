@@ -6236,6 +6236,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             message = _at("ariflame.busy.interrupting")
 
+        # Каталог может не доехать (файл не выложен, YAML сломан) — тогда
+        # _at() вернёт пустую строку, и человек получит пустое сообщение.
+        # Это хуже английского текста: выглядит как сбой бота.
+        if not message:
+            logger.warning("ARIFLAME: busy-ack string missing from the catalog")
+            message = "⏳ Сейчас занят — отвечу, как только закончу."
+
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the
         # queue/interrupt knob.  Flag is persisted to config.yaml so it never
