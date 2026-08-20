@@ -996,6 +996,29 @@ def build_turn_context(
     except Exception:
         logger.debug("ARIFLAME: current-datetime stamp skipped", exc_info=True)
 
+    # ARIFLAME: свежая память — тем же эфемерным каналом, что и дата.
+    #
+    # Системный промпт хранит СНИМОК памяти и переписывается только на
+    # компакции, поэтому запись, сделанная в середине темы, до модели не
+    # доезжала вовсе: 252 из 299 успешных записей отсутствовали в промпте
+    # той сессии, где были сделаны.  Пересобирать промпт каждый ход нельзя —
+    # это промах префикс-кэша на каждом сообщении, то есть деньги.  Поэтому
+    # едет только РАЗНИЦА между диском и промптом, в хвост запроса, и едет
+    # один раз на запись (дальше её маркер уже виден в переигранном
+    # ``api_content``).  Пустая разница не стоит ничего — блока просто нет.
+    try:
+        from agent.memory_delta import build_memory_delta_block
+
+        _mem_block = build_memory_delta_block(agent, active_system_prompt, messages)
+        if _mem_block:
+            plugin_user_context = (
+                plugin_user_context + "\n\n" + _mem_block
+                if plugin_user_context
+                else _mem_block
+            )
+    except Exception:
+        logger.debug("ARIFLAME: memory delta skipped", exc_info=True)
+
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()

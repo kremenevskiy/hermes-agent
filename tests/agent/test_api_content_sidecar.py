@@ -292,16 +292,26 @@ class TestPrologueStamping:
         assert msg["api_content"] == compose_user_api_content(
             "hello", ctx.ext_prefetch_cache, ctx.plugin_user_context
         )
-        assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
+        # ARIFLAME: к API-копии приклеивается ещё и эфемерный хвост (живая
+        # дата, а когда есть что довозить — свежая память), поэтому сверяем
+        # начало. Инвариант прежний: чистое содержимое не тронуто, а в
+        # сайдкаре ровно те байты, которые ушли на провод.
+        assert msg["api_content"].startswith("hello\n\nPLUGIN-CTX")
         # The early persist saw the stamped sidecar (written in one insert).
-        assert agent.api_content_at_persist == "hello\n\nPLUGIN-CTX"
+        assert agent.api_content_at_persist == msg["api_content"]
 
-    def test_no_stamp_without_injections(self):
+    def test_no_plugin_context_leaves_only_the_ariflame_tail(self):
+        # ARIFLAME: раньше без плагинов сайдкара не было вовсе. Теперь в нём
+        # всегда живая дата — осознанная плата (~30 некэшируемых токенов на
+        # ход) за то, что модель знает сегодняшнее число в неделю живущей
+        # теме. Блока памяти при этом нет: довозить нечего.
         agent = _FakeAgent()
         with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
             ctx = _build(agent)
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
-        assert agent.api_content_at_persist is None
+        msg = ctx.messages[ctx.current_turn_user_idx]
+        assert msg["content"] == "hello"
+        assert msg["api_content"].startswith("hello\n\n<current-datetime>")
+        assert "<memory-updates>" not in msg["api_content"]
 
     def test_no_stamp_for_codex_app_server(self):
         """codex_app_server turns bypass the api_messages build, so the
@@ -537,7 +547,7 @@ class TestWireInvariant:
         assert len(reqs) == 2
         sent_1 = _user_messages(reqs[0])[0]["content"]
         sent_2 = _user_messages(reqs[1])[0]["content"]
-        assert sent_1 == "hello please\n\nPLUGIN-CTX"
+        assert sent_1.startswith("hello please\n\nPLUGIN-CTX")  # ARIFLAME: + хвост
         assert sent_2 == sent_1  # repeated builds: identical bytes
 
         # The sidecar never reaches the provider.
@@ -578,7 +588,7 @@ class TestWireInvariant:
 
         # And the new current-turn message got its own injection + sidecar.
         current = _user_messages(_chat_requests(handler)[0])[-1]
-        assert current["content"] == "second question\n\nPLUGIN-CTX"
+        assert current["content"].startswith("second question\n\nPLUGIN-CTX")
 
 
 # ---------------------------------------------------------------------------
@@ -694,9 +704,10 @@ class TestPrologueMoaAndInPlaceBackfill:
 
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"
-        assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
+        assert msg["api_content"].startswith("hello\n\nPLUGIN-CTX")
+        # Байты в базе — те же, что на проводе: сверяем с самим сайдкаром.
         agent._session_db.set_latest_user_api_content.assert_called_once_with(
-            "sess-1", "hello", "hello\n\nPLUGIN-CTX"
+            "sess-1", "hello", msg["api_content"]
         )
 
 

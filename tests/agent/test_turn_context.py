@@ -174,7 +174,13 @@ def test_returns_turn_context_with_user_message_appended():
     assert isinstance(ctx, TurnContext)
     assert ctx.user_message == "hello"
     # The user turn was appended and indexed.
-    assert ctx.messages[-1] == {"role": "user", "content": "hello"}
+    # ARIFLAME: к API-копии сообщения теперь приклеивается эфемерный хвост
+    # (живая дата, а когда есть что довозить — и свежая память), поэтому у
+    # строки появился сайдкар ``api_content``. Само сообщение обязано
+    # остаться чистым: в транскрипт и в память уходит именно оно.
+    assert ctx.messages[-1]["role"] == "user"
+    assert ctx.messages[-1]["content"] == "hello"
+    assert ctx.messages[-1]["api_content"].startswith("hello\n\n<current-datetime>")
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.active_system_prompt == "SYSTEM"
 
