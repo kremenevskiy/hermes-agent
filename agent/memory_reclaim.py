@@ -328,11 +328,19 @@ def consolidate_in_background(store: Any, target: str, *, delimiter: str) -> boo
     Фоном — потому что в ходе разговора ждать сеть нельзя: человек смотрит
     на «печатает…». Ход при этом уже завершился успешно (место освободило
     вытеснение), а консолидация готовит место к следующему разу.
+
+    Ключ занятости — файл, а не имя хранилища: в одном процессе может жить
+    несколько профилей, и «уже бежит для memory» не должно означать «не
+    трогай чужой memory».
     """
+    try:
+        key = f"{store._path_for(target)}"
+    except Exception:
+        key = target
     with _consolidation_lock:
-        if _consolidation_running.get(target):
+        if _consolidation_running.get(key):
             return False
-        _consolidation_running[target] = True
+        _consolidation_running[key] = True
 
     def _worker() -> None:
         try:
@@ -341,7 +349,7 @@ def consolidate_in_background(store: Any, target: str, *, delimiter: str) -> boo
             logger.warning("ARIFLAME: фоновая консолидация памяти упала", exc_info=True)
         finally:
             with _consolidation_lock:
-                _consolidation_running[target] = False
+                _consolidation_running[key] = False
 
     threading.Thread(
         target=_worker, name=f"ariflame-memory-consolidate-{target}", daemon=True
