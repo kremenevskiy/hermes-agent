@@ -71,14 +71,28 @@ def ariflame_language() -> str:
 
 
 def at(key: str, **format_kwargs: Any) -> str:
-    """Translate one of our ``ariflame.*`` keys for the active language."""
+    """Translate one of our ``ariflame.*`` keys for the active language.
+
+    Returns ``""`` when the key is not in the catalog, so callers can fall
+    back to something readable.  Upstream's ``t()`` returns the KEY ITSELF on
+    a miss ("ariflame.working.minutes") — that is right for a developer
+    reading a log and wrong for the only audience these strings have: a
+    client, in chat, who would see a dotted path where a sentence belongs.
+    A miss is not a rare theoretical case either — it is exactly what a
+    half-deployed catalog looks like (locales/*.yaml is copied by
+    apply-fork.sh as a separate file from the code that reads it).
+    """
     try:
         from agent.i18n import t
 
-        return t(key, lang=ariflame_language(), **format_kwargs)
+        value = t(key, lang=ariflame_language(), **format_kwargs)
     except Exception:
         logger.debug("ARIFLAME: i18n lookup failed for %s", key, exc_info=True)
         return ""
+    if not value or value == key:
+        logger.warning("ARIFLAME: ключа %s нет в каталоге", key)
+        return ""
+    return value
 
 
 __all__ = ["at", "ariflame_language", "ARIFLAME_DEFAULT_LANGUAGE"]
