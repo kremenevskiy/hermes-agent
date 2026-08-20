@@ -500,6 +500,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    from datetime import datetime as _datetime
     from hermes_time import now as _hermes_now
     now = _hermes_now()
     # Date-only (not minute-precision) so the system prompt is byte-stable
@@ -516,8 +517,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # (``<current-datetime>``, injected in agent/turn_context.py).  Fixing it
     # here instead would mean a new system prompt every turn — a full prefix
     # cache miss on every single turn, which is real money.
+    # ARIFLAME: and it has to be the REAL session start.  Upstream stamps
+    # ``now()`` at build time, which is only the session start on the first
+    # turn — every rebuild (compaction boundary, restore from a NULL snapshot)
+    # re-stamps it with the current date, so an eleven-day-old conversation
+    # claimed it had begun today.  The session id carries the true start
+    # (``YYYYMMDD_HHMMSS_...``), costs nothing to read and, unlike ``now()``,
+    # does not change between rebuilds — which is also better for the prefix
+    # cache.  Ids that don't follow the pattern (``web_...``, ``cron_...``)
+    # fall back to the old behaviour.
+    _started = now
+    try:
+        _sid = str(getattr(agent, "session_id", "") or "")
+        if len(_sid) >= 15 and _sid[8] == "_" and _sid[:8].isdigit() and _sid[9:15].isdigit():
+            _started = _datetime.strptime(_sid[:15], "%Y%m%d_%H%M%S")
+    except Exception:
+        _started = now
     timestamp_line = (
-        f"Conversation started: {now.strftime('%A, %B %d, %Y')} "
+        f"Conversation started: {_started.strftime('%A, %B %d, %Y')} "
         f"(this is when this session began, NOT today's date — the current "
         f"date and time arrive with every user message inside a "
         f"<current-datetime> tag; always trust that one)"
