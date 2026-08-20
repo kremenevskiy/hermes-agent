@@ -449,3 +449,50 @@ ariflame:
     queued_subagent:    "⏳ A long task is running. Your message is queued and I'll get to it once that finishes. Send /stop to cancel everything."
     queued_compressing: "⏳ I'm tidying up the conversation so nothing gets lost. Your message is queued and I'll get to it right after. Send /stop to cancel everything."
     interrupting:       "⚡ Stopping the current task — replying now."
+
+  # The "still working" bubble. No iteration counter, no MCP tool name —
+  # that telemetry lives in the log now, not in the client's chat.
+  working:
+    minutes:  "⏳ Still working — {minutes} min so far. I'll write as soon as I have something."
+    start:    "⏳ Still working — I'll write as soon as I have something."
+    stalled:  "⚠️ This is taking longer than usual and there's no answer yet. You can keep waiting, or send /stop to cancel."
+
+  status:
+    compacted: "◐ Tidied up the conversation so nothing gets lost — carrying on."
+
+  # A turn that ended with no answer. The reason goes to the log; the person
+  # gets what to do next. Not /compact or /reset — our menu has /new and /stop.
+  turn:
+    interrupted_early: "⚠️ Your message didn't make it into the work — I was stopping the previous task just then. Please send it again."
+    not_processed:     "⚠️ Your message didn't make it into the work — I was still cleaning up after the previous task. Please send it again."
+    no_response:       "⚠️ The answer didn't come together. It happens — send it again, or phrase it a little differently."
+    stopped:           "⚠️ The task stopped halfway. Please send it again."
+    failed:            "⚠️ That didn't go through — please send it again. If it keeps happening, send /new and we'll start clean."
+    too_large:         "⚠️ This conversation has grown too long for me to carry all at once. Send /new to start a fresh one — everything I know about you and your projects stays."
+
+  drain:
+    queued:      "⏳ I'm away for an update for a moment. Your message is saved — I'll get to it as soon as I'm back."
+    busy:        "⏳ I'm away for an update for a moment and can't take a new task right now. Write again in a minute."
+    maintenance: "⏳ Maintenance is running, so I'm not taking new tasks yet. It won't be long — write again shortly."
+
+  command:
+    busy: "⏳ A task is running — /{command} won't work mid-turn. Wait for the answer or send /stop."
+
+  compaction:
+    failed: "⚠️ I couldn't tidy up the conversation. Nothing was lost, but it stayed long — if things get slow, send /new."
+
+  provider:
+    auth:         "⚠️ I can't reach the model — it's an access problem on our side. We can see it; please write again a little later."
+    rejected:     "⚠️ The model refused to answer that one. Try phrasing it differently."
+    rate_limited: "⏱️ There are too many requests to the model right now. Wait a minute and write again."
+    failed:       "⚠️ The model didn't answer even after several attempts. Please write again in a couple of minutes."
+
+  error:
+    generic:      "⚠️ Something went wrong and the answer didn't come out.{hint}\nPlease send it again — the second try usually works. If it doesn't, send /new."
+    auth:         "Access to the model isn't going through — that's on our side, and we can see it."
+    quota:        "The model's balance ran out on our side — we're on it."
+    limit_in:     "We hit the model's limit; it lifts in about {hours}h."
+    limit:        "We hit the model's limit — it will lift on its own shortly."
+    rate_limited: "There are too many requests to the model right now — wait a minute."
+    overloaded:   "The model is overloaded at the moment."
+    rejected:     "The request wasn't accepted."

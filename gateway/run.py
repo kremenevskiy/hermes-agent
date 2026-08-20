@@ -71,6 +71,49 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+# ── ARIFLAME ↓ служебные строки клиенту ─────────────────────────────────
+# Всё, что гейтвей говорит от себя — «работаю», «перезапускаюсь», «не
+# получилось» — апстрим пишет по-английски и терминами движка: gateway,
+# turn, context window, iteration, имя тула. Человек в русском чате не
+# знает ни одного из этих слов, а «check gateway logs» ему просто некуда
+# отнести. Тексты живут в locales/<lang>.yaml под ariflame.* — тот же
+# каталог и тот же загрузчик, что у апстрима (agent/ariflame_text.py).
+#
+# Пустую строку человеку отдавать нельзя: непереведённый ключ выглядит
+# как сбой бота, а пустое сообщение платформа просто не отправит и ход
+# закончится тишиной. Поэтому каждый промах каталога — WARNING в лог и
+# короткая осмысленная фраза вместо него.
+_ARIFLAME_LAST_RESORT = "⚠️ Что-то пошло не так. Напиши ещё раз, пожалуйста."
+
+
+def _ariflame_line(key: str, **fmt: Any) -> str:
+    """Строка клиенту из каталога ariflame.*; никогда не пустая."""
+    try:
+        from agent.ariflame_text import at as _at
+
+        line = _at(key, **fmt)
+    except Exception:
+        logger.debug("ARIFLAME: каталог недоступен для %s", key, exc_info=True)
+        line = ""
+    if not line:
+        logger.warning("ARIFLAME: строки %s нет в каталоге", key)
+        return _ARIFLAME_LAST_RESORT
+    return line
+
+
+# Служебные статусы рантайма, которые апстрим отдаёт готовой английской
+# строкой. Переводим В ТОЧКЕ ДОСТАВКИ, а не правкой константы у источника:
+# на текст константы завязаны тесты апстрима и разметка статусов у
+# драйверов, и при переезде на новый пин такая правка потерялась бы молча.
+_ARIFLAME_SERVICE_STATUS = (
+    # «✓ Context compaction complete — continuing turn...» Начало этой же
+    # операции апстрим на чат-платформах уже прячет (_TELEGRAM_NOISY_STATUS_RE),
+    # а конец — нет: человек видел «готово» от того, что при нём не начиналось.
+    (re.compile(r"context\s+compaction\s+complete", re.IGNORECASE),
+     "ariflame.status.compacted"),
+)
+# ── ARIFLAME ↑ ──────────────────────────────────────────────────────────
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
@@ -398,23 +441,21 @@ def _format_exec_approval_fallback(
 
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    """Map raw provider/API errors to a short user-safe Telegram reply.
+
+    ARIFLAME: это последнее, что человек видит, когда падает модель, и апстрим
+    отправляет его читать логи гейтвея («check gateway logs for diagnostics»).
+    У клиента нет ни логов, ни гейтвея, ни английского — он видит стену слов
+    и решает, что бот сломался навсегда. Сырой ответ поставщика остаётся в
+    логе: он нужен нам, а не ему.
+    """
     if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
-        )
+        return _ariflame_line("ariflame.provider.auth")
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
-        )
+        return _ariflame_line("ariflame.provider.rejected")
     if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
-    return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+        return _ariflame_line("ariflame.provider.rate_limited")
+    return _ariflame_line("ariflame.provider.failed")
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -496,6 +537,13 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         return None
+    # ARIFLAME: статус-колбэк — единственная дорога, по которой служебные
+    # строки рантайма попадают человеку в чат, и она вся проходит здесь.
+    # Значит и переводить их надо здесь, одним местом на все подсистемы.
+    for _pattern, _key in _ARIFLAME_SERVICE_STATUS:
+        if _pattern.search(text):
+            logger.debug("ARIFLAME: служебный статус переведён (%s)", _key)
+            return _ariflame_line(_key)
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
@@ -2894,15 +2942,12 @@ def _normalize_empty_agent_response(
             for p in ("context", "token", "too large", "too long", "exceed", "payload")
         ) or ("400" in error_str and history_len > 50)
         if is_context_failure:
-            return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
-            )
-        return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session."
-        )
+            # ARIFLAME: /compact и /reset нашему клиенту недоступны — в меню
+            # их нет, а есть /new. Советовать команду, которой у человека
+            # нет, хуже, чем не советовать ничего.
+            return _ariflame_line("ariflame.turn.too_large")
+        logger.info("ARIFLAME: ход не доехал — %s", str(error_detail)[:300])
+        return _ariflame_line("ariflame.turn.failed")
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if agent_result.get("interrupted"):
@@ -2915,21 +2960,16 @@ def _normalize_empty_agent_response(
         # interrupt flag left over from a recent /stop (#44212).  Pure
         # silence there swallows a real user message, so surface it.
         if api_calls == 0:
-            return (
-                "⚠️ Your message was interrupted before processing started "
-                "(likely by a recent /stop). Please send it again."
-            )
+            return _ariflame_line("ariflame.turn.interrupted_early")
         return response
     if api_calls > 0:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             return ""
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
-        return (
-            "⚠️ Processing completed but no response was generated. "
-            "This may be a transient error — try sending your message again."
-        )
+            logger.info("ARIFLAME: ход оборвался — %s", str(err)[:200])
+            return _ariflame_line("ariflame.turn.stopped")
+        return _ariflame_line("ariflame.turn.no_response")
 
     # api_calls == 0, not failed, not interrupted: the agent never ran for
     # this turn. This is the post-/stop generation-race pattern where the
@@ -2942,10 +2982,7 @@ def _normalize_empty_agent_response(
         and not agent_result.get("failed")
         and not agent_result.get("partial")
     ):
-        return (
-            "⚠️ Your message wasn't processed (the previous turn was still "
-            "being cleaned up). Please send it again."
-        )
+        return _ariflame_line("ariflame.turn.not_processed")
 
     return response
 
@@ -5884,11 +5921,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            # ARIFLAME: слово «gateway» человеку ничего не говорит — он
+            # знает только своего агента. Что именно происходит (restart или
+            # shutdown), видно в логе, а ему важно одно: подождать или нет.
+            logger.info(
+                "Drain busy-ack для %s (%s)", session_key, self._status_action_gerund()
+            )
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = _ariflame_line("ariflame.drain.queued")
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = _ariflame_line("ariflame.drain.busy")
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -10945,9 +10988,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # silently discarded by the slash-command safety net,
             # producing a zero-char response. See #5057, #6252, #10370.
             if _cmd_def_inner:
-                return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
+                # ARIFLAME: имя команды остаётся латиницей — Telegram других
+                # не принимает, — а объяснение вокруг него по-русски.
+                return _ariflame_line(
+                    "ariflame.command.busy", command=_cmd_def_inner.name
                 )
 
             if event.message_type == MessageType.PHOTO:
@@ -11006,13 +11050,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 return None
             if self._draining:
+                # ARIFLAME: та же пара строк, что и в _handle_active_session_busy_message.
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
-                return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                    if self._queue_during_drain_enabled()
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-                )
+                    return _ariflame_line("ariflame.drain.queued")
+                return _ariflame_line("ariflame.drain.busy")
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
@@ -11785,11 +11827,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Refusing new turn for session %s — external drain active.",
                 _quick_key,
             )
-            return (
-                "⏳ This agent is draining for a maintenance action and isn't "
-                "accepting new turns right now. It'll be back in a moment — "
-                "please resend shortly."
-            )
+            return _ariflame_line("ariflame.drain.maintenance")
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -13085,13 +13123,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         # reaches gateway users directly.
                                         from agent.redact import redact_sensitive_text
                                         _err = redact_sensitive_text(_err, force=True)
-                                        _warn_msg = (
-                                            "⚠️ Context compression aborted "
-                                            f"({_err}). No messages were dropped — "
-                                            "conversation is unchanged. Run /compress "
-                                            "to retry, /reset for a clean session, or "
-                                            "check your auxiliary.compression model "
-                                            "configuration."
+                                        # ARIFLAME: причина сбоя и советы про
+                                        # auxiliary.compression — это к нам, не
+                                        # к человеку. Ему важно одно: ничего не
+                                        # пропало, но переписка осталась длинной.
+                                        logger.warning(
+                                            "ARIFLAME: компакция не удалась — %s", _err
+                                        )
+                                        _warn_msg = _ariflame_line(
+                                            "ariflame.compaction.failed"
                                         )
                                         try:
                                             _adapter = self._adapter_for_source(source)
@@ -13111,21 +13151,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
                                         _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
                                         _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
-                                        _aux_msg = (
-                                            f"ℹ️ Configured compression model `{_aux_model}` "
-                                            f"failed ({_aux_err}). Recovered using your main "
-                                            "model — context is intact — but you may want to "
-                                            "check `auxiliary.compression.model` in config.yaml."
+                                        # ARIFLAME: это уведомление целиком про
+                                        # наш конфиг — «check auxiliary.compression.model
+                                        # in config.yaml». Оно и раньше сообщало,
+                                        # что ВСЁ ОБОШЛОСЬ («context is intact»),
+                                        # то есть человеку делать нечего, а починить
+                                        # может только владелец. Значит его адрес —
+                                        # лог, а не чат клиента.
+                                        logger.warning(
+                                            "ARIFLAME: вспомогательная модель компакции %s упала (%s) — "
+                                            "сжали основной моделью, контекст цел",
+                                            _aux_model, _aux_err,
                                         )
-                                        try:
-                                            _adapter = self._adapter_for_source(source)
-                                            if _adapter and source.chat_id:
-                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
-                                        except Exception as _werr:
-                                            logger.warning(
-                                                "Failed to deliver aux-model-fallback notice to user: %s",
-                                                _werr,
-                                            )
                                 finally:
                                     # Evict the cached agent so the next turn
                                     # rebuilds its system prompt from current
@@ -13416,11 +13453,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)" and not _intentional_silence:
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
+                response = _ariflame_line("ariflame.turn.no_response")
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -14009,13 +14042,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
             # Log full details server-side only; never expose raw exception
             # types or messages to end users (info-leakage risk).
+            # ARIFLAME ↓ всё, что ниже, человек читает в чате.
+            # Апстрим предлагал ему «run `claude /login`», «check your provider
+            # dashboard» и «/reset» — команды и панели, которых у клиента нет
+            # и быть не должно: ключи и баланс это наша сторона. Оставляем
+            # человеку одно: что случилось на его языке и что делать дальше.
+            # Код и текст исключения по-прежнему уходят в лог выше.
             status_hint = ""
             status_code = getattr(e, "status_code", None)
             _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
-                status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
+                status_hint = " " + _ariflame_line("ariflame.error.auth")
             elif status_code == 402:
-                status_hint = " Your API balance or quota is exhausted. Check your provider dashboard."
+                status_hint = " " + _ariflame_line("ariflame.error.quota")
             elif status_code == 429:
                 # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
                 _err_body = getattr(e, "response", None)
@@ -14032,29 +14071,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _resets_in and _resets_in > 0:
                         import math
                         _hours = math.ceil(_resets_in / 3600)
-                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                        status_hint = " " + _ariflame_line(
+                            "ariflame.error.limit_in", hours=_hours
+                        )
                     else:
-                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                        status_hint = " " + _ariflame_line("ariflame.error.limit")
                 else:
-                    status_hint = " You are being rate-limited. Please wait a moment and try again."
+                    status_hint = " " + _ariflame_line("ariflame.error.rate_limited")
             elif status_code == 529:
-                status_hint = " The API is temporarily overloaded. Please try again shortly."
+                status_hint = " " + _ariflame_line("ariflame.error.overloaded")
             elif status_code in {400, 500}:
                 # 400 with a large session is context overflow.
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
-                    return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
-                    )
+                    return _ariflame_line("ariflame.turn.too_large")
                 elif status_code == 400:
-                    status_hint = " The request was rejected by the API."
-            return (
-                f"Sorry, I encountered an unexpected error.{status_hint}\n"
-                "Try again or use /reset to start a fresh session."
-            )
+                    status_hint = " " + _ariflame_line("ariflame.error.rejected")
+            # ARIFLAME ↑
+            return _ariflame_line("ariflame.error.generic", hint=status_hint)
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
@@ -21985,11 +22020,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
-                _heartbeat_text = (
-                    _generic_status_phrase("status")
-                    if _long_running_mode == "generic"
-                    else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
-                )
+                # ARIFLAME ↓ плашка «ещё работаю» — человеку, не нам.
+                #
+                # Было: «⏳ Working — 12 min — iteration 7/40,
+                # mcp__every_agent_media__job_status». Три четверти этой строки —
+                # наша телеметрия: номер итерации из цикла модели и внутреннее
+                # имя MCP-тула. Человеку они не говорят ничего, а выглядят как
+                # утечка кишок наружу; ещё и подсказывают имена тулов, которых
+                # он трогать не должен. Ему нужно ровно две вещи: я не умер и
+                # сколько это уже длится.
+                #
+                # Телеметрия не удалена — она переехала в лог, где ей и место:
+                # именно по ней мы разбираем «почему у клиента 40 минут».
+                if _status_detail:
+                    logger.info(
+                        "Heartbeat %s: %d мин%s", session_key, _elapsed_mins, _status_detail
+                    )
+                if _long_running_mode == "generic":
+                    _heartbeat_text = _generic_status_phrase("status")
+                elif _elapsed_mins > 0:
+                    _heartbeat_text = _ariflame_line(
+                        "ariflame.working.minutes", minutes=_elapsed_mins
+                    )
+                else:
+                    _heartbeat_text = _ariflame_line("ariflame.working.start")
+                # ARIFLAME ↑
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
@@ -22132,13 +22187,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _warn_adapter:
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
+                            # ARIFLAME: две минуты в одной фразе («нет
+                            # активности 15 мин», «выключусь через 15 мин») —
+                            # это наши таймауты, а не его дело. И /reset у
+                            # клиента нет: остановка называется /stop.
+                            logger.info(
+                                "Простой %d мин, таймаут через %d мин (сессия %s)",
+                                _elapsed_warn, _remaining_mins, session_key,
+                            )
                             try:
                                 await _warn_adapter.send(
                                     source.chat_id,
-                                    f"⚠️ No activity for {_elapsed_warn} min. "
-                                    f"If the agent does not respond soon, it will "
-                                    f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    _ariflame_line("ariflame.working.stalled"),
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
