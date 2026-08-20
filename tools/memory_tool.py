@@ -364,12 +364,25 @@ class MemoryStore:
         cached = getattr(self, attr, None)
         if cached is not None:
             return bool(cached)
+        # ⚠️ Дефолты РАЗНЫЕ, и это не небрежность.
+        #
+        # auto_reclaim (вытеснение) — безопасен: он убирает старое, чтобы новая
+        # запись прошла, и ничего не переписывает. Его дефолт «включено».
+        #
+        # auto_consolidate — переписывает файл памяти человека чужими словами,
+        # моделью, на его же ключе. Это не уборка, а редактура личных данных.
+        # Включать такое дефолтом нельзя: на 20.08.2026 у одной клиентки USER.md
+        # заполнен на ~96% от нового лимита, то есть первая же запись после
+        # выкатки запустила бы перепись её профиля — а живого прогона
+        # консолидации не было ни одного, автор правки это прямо написал.
+        # Включаем явным ключом в config.yaml, после проверки на стенде.
+        default = name != "auto_consolidate"
         try:
             from hermes_cli.config import load_config
 
-            value = ((load_config() or {}).get("memory") or {}).get(name, True)
+            value = ((load_config() or {}).get("memory") or {}).get(name, default)
         except Exception:
-            value = True  # конфига нет — работаем, а не молчим
+            value = default  # конфига нет — работаем по безопасному умолчанию
         value = bool(value)
         setattr(self, attr, value)
         return value
