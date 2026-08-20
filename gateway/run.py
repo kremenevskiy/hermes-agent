@@ -12620,14 +12620,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _at("ariflame.session_reset.ask"),
                             _at("ariflame.session_reset.resume"),
                         )
-                        try:
-                            session_info = await asyncio.to_thread(
-                                self._reset_notice_session_info, source
-                            )
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
-                        except Exception:
-                            pass
+                        # ARIFLAME: блок «◆ Model / Provider / Context: 1.1M tokens»
+                        # сюда НЕ добавляем. Плашку читает человек, купивший
+                        # помощника; название модели и размер окна ему ничего не
+                        # говорят, а вид технической сводки после «начинаю
+                        # заново» читается как отчёт о поломке. Владельцу эти
+                        # данные доступны отдельно, в /status.
                         await adapter.send(
                             source.chat_id, notice,
                             metadata=self._thread_metadata_for_source(source),
