@@ -155,7 +155,11 @@ class TestStringContentSidecarDelivery:
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"
-        assert msg["api_content"] == "hello\n\n" + RESET_NOTE
+        # ARIFLAME: за заметкой гейтвея по тому же каналу едет ещё живая
+        # дата (а когда есть что довозить — и свежая память), поэтому
+        # сверяем начало. Инвариант тот же: содержимое чистое, в сайдкаре
+        # ровно то, что ушло на провод.
+        assert msg["api_content"].startswith("hello\n\n" + RESET_NOTE)
         # The composed bytes match what conversation_loop would send.
         assert msg["api_content"] == compose_user_api_content(
             "hello", ctx.ext_prefetch_cache, ctx.plugin_user_context
@@ -172,13 +176,18 @@ class TestStringContentSidecarDelivery:
         ):
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]
-        assert msg["api_content"] == "hello\n\nPLUGIN-CTX\n\n" + VC_NOTE
+        assert msg["api_content"].startswith("hello\n\nPLUGIN-CTX\n\n" + VC_NOTE)
 
-    def test_no_notes_means_no_stamp(self):
+    def test_no_notes_leaves_only_the_ariflame_tail(self):
+        # ARIFLAME: без заметок гейтвея сайдкар всё равно есть — в нём живая
+        # дата. Проверяем, что заметок в нём нет и содержимое не тронуто.
         agent = _FakeAgent()
         with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
             ctx = _build(agent)
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+        msg = ctx.messages[ctx.current_turn_user_idx]
+        assert msg["content"] == "hello"
+        assert msg["api_content"].startswith("hello\n\n<current-datetime>")
+        assert RESET_NOTE not in msg["api_content"]
 
 
 class TestMultimodalFallback:

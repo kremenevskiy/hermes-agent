@@ -136,10 +136,11 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
     assert observed[0][0] == "persist"
     assert observed[1][0] == "provider"
     persisted_messages = observed[0][1]
-    assert persisted_messages[-1] == {
-        "role": "user",
-        "content": "new message that must survive a crash",
-    }
+    # ARIFLAME: у пользовательской строки теперь есть сайдкар api_content —
+    # эфемерный хвост (живая дата, при необходимости свежая память). Важно
+    # ровно то, ради чего тест написан: чистое содержимое дошло до персиста.
+    assert persisted_messages[-1]["role"] == "user"
+    assert persisted_messages[-1]["content"] == "new message that must survive a crash"
 
 
 class TestHTTP413Compression:
@@ -484,10 +485,11 @@ class TestHTTP413Compression:
             "role": "system",
             "content": "compressed prompt",
         }
-        assert request_payloads[1]["messages"][1] == {
-            "role": "user",
-            "content": "compressed summary",
-        }
+        assert request_payloads[1]["messages"][1]["role"] == "user"
+        # ARIFLAME: эфемерный хвост едет в конце пользовательского сообщения.
+        assert request_payloads[1]["messages"][1]["content"].startswith(
+            "compressed summary"
+        )
 
     def test_413_cannot_compress_further(self, agent):
         """When compression can't reduce messages, return partial result."""
@@ -500,11 +502,15 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # Compression returns same number of messages → can't compress further
-            mock_compress.return_value = (
-                [{"role": "user", "content": "hello"}],
-                "same prompt",
-            )
+            # Compression returns the messages UNCHANGED → can't compress further.
+            # ARIFLAME: раньше здесь возвращалась заново собранная строка
+            # {"role": "user", "content": "hello"}. Теперь к сообщению
+            # приклеивается эфемерный хвост (живая дата), и голое "hello" на
+            # выходе — это уже настоящее сокращение: рантайм видит падение
+            # токенов, честно идёт на повтор, и тест ловит не то, что хотел.
+            # Возвращаем ровно то, что пришло: «ничего не выиграли» — это про
+            # токены, а не про число строк.
+            mock_compress.side_effect = lambda msgs, *a, **k: (list(msgs), "same prompt")
             result = agent.run_conversation("hello")
 
         assert result["completed"] is False
