@@ -618,6 +618,42 @@ def build_turn_context(
         if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
             agent._pending_cli_user_message = None
 
+    # ARIFLAME: close the hole in the system-prompt write path.
+    #
+    # ``restore_or_build_system_prompt`` above persists the snapshot with an
+    # UPDATE, but the row it targets is only created by ``_ensure_db_session``
+    # a few lines later — so on a fresh session that write matched nothing,
+    # raised nothing, and was reported as success.  Today it survives only
+    # because ``_ensure_db_session`` also passes the prompt into its INSERT;
+    # whenever that INSERT is skipped (row already created without a prompt)
+    # or fails, the column stays NULL and EVERY later turn rebuilds the whole
+    # system prompt and misses the provider prefix cache.  Retry here, now
+    # that the row is guaranteed to exist.  The flag is only set on a turn
+    # that actually built a prompt, so a healthy session pays nothing.
+    if getattr(agent, "_system_prompt_persist_pending", False) and agent._cached_system_prompt:
+        _db = getattr(agent, "_session_db", None)
+        if _db is not None:
+            try:
+                _rows = _db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+                agent._system_prompt_persist_pending = (_rows == 0)
+                if _rows == 0:
+                    logger.warning(
+                        "System-prompt snapshot still unwritten for session %s "
+                        "after the row create — prefix cache will miss next turn.",
+                        agent.session_id or "none",
+                    )
+                else:
+                    logger.debug(
+                        "System-prompt snapshot persisted on retry for session %s",
+                        agent.session_id or "none",
+                    )
+            except Exception:
+                logger.warning(
+                    "System-prompt snapshot retry failed for session=%s",
+                    agent.session_id or "none",
+                    exc_info=True,
+                )
+
     # ── Idle-triggered compaction (opt-in; ``idle_compact_after_seconds``) ──
     # When a session resumes after a long idle gap, compact the accumulated
     # history up front so the rest of the conversation does not keep re-reading

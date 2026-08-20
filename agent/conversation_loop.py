@@ -495,14 +495,34 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # subsequent turn).
     if agent._session_db:
         try:
-            agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            _rows = agent._session_db.update_system_prompt(
+                agent.session_id, agent._cached_system_prompt
+            )
         except Exception as exc:
+            # ARIFLAME: a raising write is retried too — the old code only
+            # logged and moved on, leaving the column NULL for good.
+            agent._system_prompt_persist_pending = True
             logger.warning(
                 "Session DB update_system_prompt failed for session %s: "
                 "%s. Subsequent turns will rebuild the system prompt and "
                 "miss the prefix cache.",
                 agent.session_id, exc,
             )
+        else:
+            # ARIFLAME: this write is an UPDATE and it runs BEFORE
+            # _ensure_db_session() creates the row, so on a fresh session it
+            # matches nothing and vanishes without an exception.  Remember
+            # that and let build_turn_context retry once the row is there.
+            # ``_rows == 0`` (not ``not _rows``) on purpose: a session-DB
+            # double that returns None means "unknown", not "lost".
+            agent._system_prompt_persist_pending = (_rows == 0)
+            if _rows == 0:
+                logger.warning(
+                    "update_system_prompt matched no row for session %s — the "
+                    "session row does not exist yet, so the snapshot was not "
+                    "stored. Retrying after the row is created.",
+                    agent.session_id,
+                )
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:

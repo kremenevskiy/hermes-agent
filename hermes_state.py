@@ -4087,14 +4087,32 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
-        """Store the full assembled system prompt snapshot."""
+    def update_system_prompt(self, session_id: str, system_prompt: str) -> int:
+        """Store the full assembled system prompt snapshot.
+
+        ARIFLAME: returns the number of rows the statement actually wrote.
+        This is an UPDATE, so when the session row does not exist yet it
+        matches nothing, writes nothing and raises nothing — and every caller
+        used to read that silence as success.  That is the write path the
+        "stored system prompt is null" warning points at: the snapshot write
+        in ``_restore_or_build_system_prompt`` runs BEFORE
+        ``_ensure_db_session()`` creates the row (see ``build_turn_context``),
+        so on a first turn it is a no-op and the column only survives because
+        ``_ensure_db_session`` happens to pass the prompt into its INSERT.
+        Callers now check the count and retry once the row exists.
+        """
+        written = {"rows": 0}
+
         def _do(conn):
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
             )
+            # rowcount is -1 on some drivers for statements that matched
+            # nothing; normalise so callers can compare against 0.
+            written["rows"] = max(0, cursor.rowcount if cursor.rowcount is not None else 0)
         self._execute_write(_do)
+        return written["rows"]
 
     def update_session_model(self, session_id: str, model: str) -> None:
         """Update the model for a session after a mid-session switch.
