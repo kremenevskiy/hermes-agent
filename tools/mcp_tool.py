@@ -4531,6 +4531,114 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
+# ── ARIFLAME: адрес разговора для нашего гейтвея ───────────────────────────
+# Наш MCP-сервер (гейтвей Every Agent) пишет человеку САМ, своим ботом:
+# карточка «подтвердить цену», отчёт о списании. Куда писать, он может узнать
+# только от нас — в HTTP-запросе у него есть Bearer-токен, то есть ЧЕЙ это
+# бокс, но не в каком чате и топике человек сейчас разговаривает.
+#
+# 20.08.2026 это стоило клиентке рабочего дня: она вела разговор в топике
+# «Видео и мультики», карточка подтверждения ушла в главный чат, она её не
+# увидела, агент честно ждал нажатия — и разговор встал намертво. Ворота
+# пришлось выключить.
+#
+# Контракт (задан владельцем, одинаков с обеих сторон):
+#     "_ea_thread": {"chat_id": <int>, "thread_id": <int|null>}
+# кладём в аргументы вызова; гейтвей читает и ОБЯЗАН снять перед вызовом
+# поставщика.
+#
+# Поле уходит ТОЛЬКО нашему серверу. Чужому MCP лишний ключ в аргументах —
+# это в лучшем случае ошибка валидации схемы, в худшем — отданный наружу
+# адрес переписки человека.
+_EA_SERVER_MARK = "every_agent_media"
+_EA_THREAD_KEY = "_ea_thread"
+
+
+def _ea_int_or_none(value) -> Optional[int]:
+    """Telegram-id как int; всё, что не целое число, — None.
+
+    Контракт требует именно число: chat_id строкой гейтвей отличит от «нет
+    значения» только сравнением, а thread_id строкой «0» тихо стал бы
+    правдой. Пустая строка здесь — обычное дело: contextvars отдают "" и
+    когда сессии нет, и когда топика нет.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ea_is_our_server(server_name: str) -> bool:
+    """Наш ли это MCP-сервер.
+
+    В конфиге бокса он записан через дефис (``every-agent-media``), а в имени
+    тула Hermes уже подставляет подчёркивания (``mcp__every_agent_media__*``).
+    Сравниваем нормализованное имя — тем же санитайзером, каким строится имя
+    тула, иначе совпадение зависело бы от того, как владелец назвал сервер.
+    """
+    return _EA_SERVER_MARK in sanitize_mcp_name_component(server_name)
+
+
+def _ea_thread_payload() -> Optional[dict]:
+    """Адрес текущего разговора: ``{"chat_id": int, "thread_id": int|None}``.
+
+    Читаем контекст ХОДА (contextvars), а не переменные окружения процесса:
+    у гейтвея два одновременных сообщения живут в одном процессе, и os.environ
+    отдал бы адрес соседнего чата — ровно та поломка, из-за которой Hermes
+    когда-то и переехал на contextvars.
+
+    Топик определить удаётся не всегда (личка без топиков, CLI, крон) — тогда
+    отдаём chat_id и ``thread_id: None``. Молчать нельзя: без chat_id гейтвей
+    вернётся к «главному чату», и мы получим ту же запертую клиентку.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:  # pragma: no cover — рантайм без гейтвея (голый CLI)
+        return None
+
+    chat_id = _ea_int_or_none(get_session_env("HERMES_SESSION_CHAT_ID", ""))
+    thread_id = _ea_int_or_none(get_session_env("HERMES_SESSION_THREAD_ID", ""))
+    if chat_id is None:
+        # Крон запускает ход без сессии, но со своим адресом доставки. Без
+        # этой ветки ночная генерация по расписанию опять уезжала бы в
+        # главный чат — то есть мимо топика, в котором её заказывали.
+        chat_id = _ea_int_or_none(
+            get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", ""))
+        thread_id = _ea_int_or_none(
+            get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", ""))
+    if chat_id is None:
+        return None
+    return {"chat_id": chat_id, "thread_id": thread_id}
+
+
+def _ea_with_thread(server_name: str, tool_name: str, args: dict) -> dict:
+    """Дописать ``_ea_thread`` в аргументы вызова к НАШЕМУ серверу.
+
+    Возвращает КОПИЮ: словарь аргументов принадлежит вызывающему (он же
+    попадает в трассу и в лог хода), и дописывать в него служебное поле
+    означало бы показать его модели в её же истории.
+    """
+    if not _ea_is_our_server(server_name) or not isinstance(args, dict):
+        return args
+    payload = _ea_thread_payload()
+    if payload is None:
+        logger.warning(
+            "ARIFLAME: %s/%s — в контексте хода нет chat_id, гейтвей ответит "
+            "в главный чат", server_name, tool_name,
+        )
+        return args
+    enriched = dict(args)
+    enriched[_EA_THREAD_KEY] = payload
+    logger.info(
+        "ARIFLAME: %s/%s <- _ea_thread chat_id=%s thread_id=%s",
+        server_name, tool_name, payload["chat_id"], payload["thread_id"],
+    )
+    return enriched
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -4539,6 +4647,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        # ARIFLAME: адрес текущего чата и топика — в аргументы нашего сервера.
+        # Ровно здесь: ниже args уходит в замыкание _call, и повторы после
+        # переподключения/переавторизации отправят уже обогащённые аргументы.
+        args = _ea_with_thread(server_name, tool_name, args)
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
