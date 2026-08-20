@@ -20566,8 +20566,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     model, runtime_kwargs.get("provider"), session_key or "",
                 )
             except Exception as exc:
+                # ARIFLAME: наружу — человеческий текст, подробности — в лог.
+                # Раньше сюда уезжал текст исключения целиком: что в нём
+                # окажется, зависит от места падения, и гарантии, что там не
+                # будет куска конфига или ключа, нет никакой. Плюс человек
+                # получал английскую строку про «provider authentication».
+                from agent.ariflame_text import at as _at
+                logger.warning("ARIFLAME: не собрался рантайм сессии: %s", exc,
+                               exc_info=True)
                 return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "final_response": _at("ariflame.provider.auth"),
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],
