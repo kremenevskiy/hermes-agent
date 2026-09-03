@@ -685,10 +685,51 @@ def get_image_cache_dir() -> Path:
     return d
 
 
+# ARIFLAME: HEIC/HEIF/AVIF с айфона. Telegram отдаёт их документом; без этого
+# списка байты не проходили _looks_like_image, и 15 фото клиентки 29.08.2026
+# ушли в «could not be read as an image».
+_HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis",
+                b"mif1", b"msf1", b"avif", b"avis"}
+
+
+def _looks_like_heif(data: bytes) -> bool:
+    return len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _HEIF_BRANDS
+
+
+def normalize_image_bytes(data: bytes, ext: str = "") -> tuple:
+    """ARIFLAME: HEIC/HEIF → JPEG, остальное как есть. Возвращает (bytes, ext).
+
+    Конвертируем ДО кэша: дальше картинку смотрит vision через Pillow без
+    HEIF-плагина, а человек ждёт разбора фото, а не объяснения про форматы.
+    Нет pillow-heif или файл битый — отдаём исходник, кэш его примет по
+    сигнатуре, и модель хотя бы увидит, что файл пришёл.
+    """
+    if not (_looks_like_heif(data) or (ext or "").lower() in (".heic", ".heif")):
+        return data, ext
+    try:
+        import io
+        import pillow_heif  # type: ignore
+        from PIL import Image
+        pillow_heif.register_heif_opener()
+        im = Image.open(io.BytesIO(data))
+        im.load()
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=92)
+        return buf.getvalue(), ".jpg"
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "ARIFLAME: HEIC не сконвертировался, кладу как есть: %s", e)
+        return data, ext
+
+
 def _looks_like_image(data: bytes) -> bool:
     """Return True if *data* starts with a known image magic-byte sequence."""
     if len(data) < 4:
         return False
+    if _looks_like_heif(data):
+        return True
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         return True
     if data[:3] == b"\xff\xd8\xff":

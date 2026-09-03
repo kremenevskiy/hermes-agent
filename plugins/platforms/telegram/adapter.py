@@ -261,6 +261,7 @@ from gateway.platforms.base import (
     SendResult,
     classify_send_error,
     cache_image_from_bytes,
+    normalize_image_bytes,
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
@@ -281,13 +282,17 @@ from plugins.platforms.telegram.telegram_network import (
 )
 from utils import atomic_replace, env_float, env_int
 
-_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+# ARIFLAME: .heic/.heif — фото с айфона документом; конвертируются в JPEG
+# перед кэшем (normalize_image_bytes), а не отвергаются.
+_TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
     "image/webp": ".webp",
     "image/gif": ".gif",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
 }
 _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".png": "image/png",
@@ -8713,6 +8718,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     file_obj = await doc.get_file()
                     image_bytes = await file_obj.download_as_bytearray()
                     image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
+                    # ARIFLAME: HEIC → JPEG до кэша (см. normalize_image_bytes).
+                    image_bytes, image_ext = normalize_image_bytes(bytes(image_bytes), image_ext)
                     try:
                         cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
                     except ValueError as e:

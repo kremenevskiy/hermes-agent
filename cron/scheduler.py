@@ -2493,8 +2493,19 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
+    # ARIFLAME: дата и время прямо в преамбуле. Без них агент по расписанию
+    # «итог дня» дважды прислал сводку за вчера: 01.09 и 02.09 в 22:00 он
+    # называл «сегодня» 31 августа. Строка стоит первой — модель читает её
+    # раньше задания.
+    try:
+        _now_line = ("CURRENT DATE AND TIME: "
+                     + _hermes_now().strftime("%Y-%m-%d %H:%M %Z (%A)")
+                     + ". Treat THIS as today; a daily summary is for this date. ")
+    except Exception:  # noqa: BLE001 — дата не должна ронять крон
+        _now_line = ""
     cron_hint = (
         "[IMPORTANT: You are running as a scheduled cron job. "
+        + _now_line +
         "DELIVERY: Your final response will be automatically delivered "
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
