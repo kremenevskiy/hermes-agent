@@ -577,6 +577,22 @@ _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
 )
 
 
+
+def _ariflame_video_dims(path: str) -> dict:
+    """width/height/duration для send_video (ARIFLAME). Пусто, если ffprobe не смог."""
+    import json as _json
+    import subprocess as _sp
+    try:
+        out = _sp.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                       "stream=width,height:format=duration", "-of", "json", path],
+                      capture_output=True, text=True, timeout=30).stdout
+        j = _json.loads(out); st = (j.get("streams") or [{}])[0]
+        d = {"width": int(st.get("width") or 0), "height": int(st.get("height") or 0),
+             "duration": int(float((j.get("format") or {}).get("duration") or 0))}
+        return {k: v for k, v in d.items() if v}
+    except Exception:
+        return {}
+
 class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
@@ -6969,12 +6985,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
+            # ARIFLAME 14.09.2026: без width/height/duration Telegram записывает
+            # видео как 320×320 и клиент рисует его «сжатым» при целом файле
+            # (проверено ответом Bot API). ffprobe есть на каждом боксе.
+            _dims = _ariflame_video_dims(video_path)
             with open(video_path, "rb") as f:
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_video,
                     {
                         "chat_id": normalize_telegram_chat_id(chat_id),
                         "video": f,
+                        **_dims,
+                        "supports_streaming": True,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
                         **thread_kwargs,
