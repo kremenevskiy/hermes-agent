@@ -22329,7 +22329,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
                 except Exception:
                     pass
-                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+                # ARIFLAME: модель качества (скилл `model: quality`) — не фолбэк:
+                # агент остаётся в кэше, назад его вернёт окно в начале хода
+                # (agent/ariflame_quality.py). Иначе пересборка агента на каждом ходу.
+                _ea_quality_hold = bool(
+                    getattr(_agent, "_ea_quality_base", None)
+                    and not getattr(_agent, "_fallback_activated", False)
+                )
+                if (_agent.model != _cfg_model and not _ea_quality_hold
+                        and not self._is_intentional_model_switch(session_key, _agent.model)):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.
                     self._evict_cached_agent(session_key)

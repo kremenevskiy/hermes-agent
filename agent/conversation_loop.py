@@ -1467,7 +1467,17 @@ def run_conversation(
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
-                api_kwargs = agent._build_api_kwargs(api_messages)
+                # ARIFLAME: модель сменилась (скилл model: quality) — чужие
+                # зашифрованные рассуждения новой не едут, id реплик снимаются.
+                # Считается на каждую попытку: фолбэк тоже меняет модель.
+                _ea_api_messages = api_messages
+                if agent.api_mode == "codex_responses":
+                    try:
+                        from agent.ariflame_quality import portable_history as _ea_portable
+                        _ea_api_messages = _ea_portable(agent, api_messages)
+                    except Exception:
+                        logger.debug("ARIFLAME: portable_history skipped", exc_info=True)
+                api_kwargs = agent._build_api_kwargs(_ea_api_messages)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -4725,7 +4735,15 @@ def run_conversation(
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason
-            
+            # ARIFLAME: метка модели на reasoning/message-элементах ответа —
+            # по ней portable_history узнаёт рассуждения чужой модели.
+            if agent.api_mode == "codex_responses":
+                try:
+                    from agent.ariflame_quality import stamp_response_items as _ea_stamp
+                    _ea_stamp(agent, normalized)
+                except Exception:
+                    logger.debug("ARIFLAME: model stamp skipped", exc_info=True)
+
             # Normalize content to string — some OpenAI-compatible servers
             # (llama-server, etc.) return content as a dict or list instead
             # of a plain string, which crashes downstream .strip() calls.
@@ -5358,6 +5376,19 @@ def run_conversation(
                             except Exception:
                                 pass
                     break
+
+                # ARIFLAME: открыт SKILL.md скилла с `model: quality` (карусель,
+                # презентация, сайт) — остаток прогона ведёт модель качества.
+                # Здесь, а не в туле: у тула нет агента, а между тулами и
+                # следующим вызовом модели смена безопасна. До проверки
+                # компакции — порог уже считается по новой модели.
+                try:
+                    from agent.ariflame_quality import after_tools as _ea_after_tools
+                    if _ea_after_tools(agent, assistant_message, messages) and agent._cached_system_prompt:
+                        # строка «Model:» в промпте хода — уже новой модели
+                        active_system_prompt = agent._cached_system_prompt
+                except Exception:
+                    logger.debug("ARIFLAME: quality switch skipped", exc_info=True)
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the

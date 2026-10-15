@@ -583,6 +583,16 @@ def build_turn_context(
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
 
+    # ARIFLAME: окно модели качества. Недавно открывали скилл `model: quality`
+    # в этой сессии — ход сразу на модели качества («сделай слайд крупнее»);
+    # окно истекло — назад на модель бокса. После восстановления промпта:
+    # промпт из базы сверяется с моделью бокса и не пересобирается.
+    try:
+        from agent.ariflame_quality import on_turn_start as _ea_quality_turn
+        _ea_quality_turn(agent)
+    except Exception:
+        logger.debug("ARIFLAME: quality window skipped", exc_info=True)
+
     active_system_prompt = agent._cached_system_prompt
 
     # Create the DB session row now that _cached_system_prompt is populated, so
