@@ -282,6 +282,21 @@ def test_result_parser_tolerates_steer_tail_and_rejects_failures(tmp_path):
     assert aq.quality_skill_from_result(inline) == ("x", None)
 
 
+def test_listed_skill_switches_without_frontmatter(monkeypatch, tmp_path):
+    """Пуллер кладёт SKILL.md без model: quality — решает список EA_QUALITY_SKILLS (15.10.2026)."""
+    plain = tmp_path / "carousel-kit"
+    plain.mkdir()
+    (plain / "SKILL.md").write_text("---\nname: carousel-kit\ndescription: \"x\"\n---\n# Карусель\n", encoding="utf-8")
+    ok = json.dumps({"success": True, "name": "carousel-kit", "skill_dir": str(plain)})
+    monkeypatch.delenv(aq.ENV_SKILLS, raising=False)
+    assert aq.quality_skill_from_result(ok) is None
+    monkeypatch.setenv(aq.ENV_SKILLS, "deck:low, carousel-kit:high ,report")
+    assert aq.listed_skills() == {"deck": "low", "carousel-kit": "high", "report": None}
+    assert aq.quality_skill_from_result(ok) == ("carousel-kit", "high")
+    other = json.dumps({"success": True, "name": "brand-memory", "content": "---\nname: brand-memory\n---\n"})
+    assert aq.quality_skill_from_result(other) is None
+
+
 # ── история: запрос после смены модели ──────────────────────────────────────
 
 def _history():

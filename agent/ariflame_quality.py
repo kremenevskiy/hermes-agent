@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 ENV_MODEL = "EA_QUALITY_MODEL"
 ENV_EFFORT = "EA_QUALITY_EFFORT"
 ENV_STICKY = "EA_QUALITY_STICKY_MIN"
+# Список «тяжёлых» скиллов «имя[:effort],…» — на случай, когда шапки SKILL.md на боксе нет: пуллер раскладывает
+# SKILL.md с шапкой только из name и description (15.10.2026 на препроде `model: quality` до бокса не доехал, и
+# карусель шла на luna). Пишет apply-fork.sh вместе с EA_QUALITY_MODEL.
+ENV_SKILLS = "EA_QUALITY_SKILLS"
 DEFAULT_STICKY_MIN = 120.0
 DEFAULT_EFFORT = "medium"
 
@@ -67,6 +71,16 @@ def quality_model() -> str:
 
 def enabled() -> bool:
     return bool(quality_model())
+
+
+def listed_skills() -> Dict[str, Optional[str]]:
+    """EA_QUALITY_SKILLS → {имя: effort или None}."""
+    out: Dict[str, Optional[str]] = {}
+    for part in (os.getenv(ENV_SKILLS) or "").split(","):
+        name, _, eff = part.strip().partition(":")
+        if name.strip():
+            out[name.strip()] = _effort(eff) if eff.strip() else None
+    return out
 
 
 def _sticky_seconds() -> float:
@@ -373,9 +387,11 @@ def quality_skill_from_result(content: Any) -> Optional[Tuple[str, Optional[str]
     if payload.get("file"):
         return None  # показ файла скилла, не SKILL.md
     fm = _skill_frontmatter(payload)
-    if str(fm.get("model") or "").strip().lower() != "quality":
+    name = str(payload.get("name") or fm.get("name") or "?")
+    listed = listed_skills()
+    if str(fm.get("model") or "").strip().lower() != "quality" and name not in listed:
         return None
-    return str(payload.get("name") or fm.get("name") or "?"), _effort(fm.get("effort"))
+    return name, _effort(fm.get("effort")) or listed.get(name)
 
 
 def after_tools(agent, assistant_message: Any, messages: List[Dict[str, Any]]) -> bool:
